@@ -1,0 +1,20 @@
+{
+  "name": "long-task-agent",
+  "version": "0.1.0",
+  "description": "AI 行动调度系统 — 时间流驱动的主动任务秘书",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.13",
+    "dotenv": "^16.4.7",
+    "node-cron": "^3.0.3",
+    "uuid": "^10.0.0"
+  }
+}
