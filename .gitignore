@@ -1,5 +1,7 @@
 node_modules/
 .env
 data/*.json
+data/*.pid
 !data/.gitkeep
 .DS_Store
+/tmp/

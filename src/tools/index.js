@@ -2,7 +2,8 @@ import { randomUUID } from "crypto";
 import { readFileSync, writeFileSync } from "fs";
 import dayjs from "dayjs";
 import { config } from "../core/config.js";
-import * as storage from "../storage/local.js";
+import * as storage from "../storage/index.js";
+import { getState, setState, inferFromActivity } from "../core/interruptibility.js";
 
 export const toolDefinitions = [
   {
@@ -30,7 +31,7 @@ export const toolDefinitions = [
           hard_deadline: { type: "string", description: "硬截止时间 ISO8601" },
           flexible_deadline: { type: "string", description: "弹性截止时间 ISO8601" },
           start_time: { type: "string", description: "开始时间 ISO8601" },
-          execution_mode: { type: "string", enum: ["until_done", "fixed_duration", "deferrable"] },
+          execution_mode: { type: "string", enum: ["fixed_duration", "deferrable"] },
           recurrence_rule: { type: "string", description: "周期规则描述" },
           notes: { type: "string" },
         },
@@ -54,6 +55,11 @@ export const toolDefinitions = [
           flexible_deadline: { type: "string" },
           start_time: { type: "string" },
           end_time: { type: "string" },
+          urgency: { type: "string", enum: ["high", "medium", "low"] },
+          importance: { type: "string", enum: ["high", "medium", "low"] },
+          execution_mode: { type: "string", enum: ["fixed_duration", "deferrable"] },
+          estimated_duration_min: { type: "number" },
+          category: { type: "string", enum: ["work", "study", "life", "health"] },
         },
         required: ["id"],
       },
@@ -107,6 +113,20 @@ export const toolDefinitions = [
   {
     type: "function",
     function: {
+      name: "list_reminders",
+      description: "查询提醒列表，可按状态过滤",
+      parameters: {
+        type: "object",
+        properties: {
+          status: { type: "string", enum: ["pending", "fired", "dismissed"], description: "不传则返回全部" },
+        },
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "cancel_reminder",
       description: "取消提醒",
       parameters: {
@@ -120,18 +140,73 @@ export const toolDefinitions = [
     type: "function",
     function: {
       name: "log_timeline",
-      description: "记录时间线事件",
+      description: "记录时间线事件。会根据 activity_type 自动更新可打扰状态（用户手动设置的状态不会被覆盖）。",
       parameters: {
         type: "object",
         properties: {
           start_time: { type: "string", description: "开始时间 ISO8601" },
           end_time: { type: "string", description: "结束时间 ISO8601（可选）" },
-          activity_type: { type: "string", enum: ["work", "study", "commute", "rest", "meeting", "other"] },
+          activity_type: { type: "string", enum: ["work", "study", "commute", "rest", "meeting", "entertainment", "other"] },
           related_task_id: { type: "string" },
+          current_active_task: { type: "string", description: "当前在做什么（自然语言描述）" },
+          expected_next_action: { type: "string", description: "预计完成后下一步做什么（如'休息后继续论文'/'跑步后洗澡'）" },
           source: { type: "string", enum: ["user_input", "ai_inferred", "system"] },
         },
         required: ["start_time", "activity_type"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_timeline",
+      description: "关闭或更新时间线事件。用户 check-in 完成时调用，填写 end_time 和 checkin_status。",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "timeline 事件 ID" },
+          end_time: { type: "string", description: "结束时间 ISO8601" },
+          checkin_status: { type: "string", enum: ["confirmed", "interrupted", "abandoned"], description: "confirmed=正常完成；interrupted=中途打断；abandoned=放弃" },
+          interruption_reason: { type: "string", description: "中断原因（checkin_status=interrupted 时填）" },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_open_timeline",
+      description: "获取当前未关闭的时间线事件（end_time 为空）。check-in 回应后用于找到要关闭的事件。",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_interruptibility",
+      description: "设置当前可打扰状态。用户说'不要打扰/开会了/专注中'时调用，必须同时追问恢复方式后再写入。用户说'好了/可以了/回来了'时用 status=open 调用。",
+      parameters: {
+        type: "object",
+        properties: {
+          status: {
+            type: "string",
+            enum: ["open", "dnd_until_time", "dnd_until_user_confirms"],
+            description: "open=可打扰；dnd_until_time=到指定时间恢复；dnd_until_user_confirms=等用户主动说恢复",
+          },
+          until: { type: "string", description: "恢复时间 ISO8601，status=dnd_until_time 时必填" },
+          reason: { type: "string", description: "用户正在做的事（如'开会'/'专注写作'）" },
+        },
+        required: ["status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_interruptibility",
+      description: "查询当前可打扰状态",
+      parameters: { type: "object", properties: {}, required: [] },
     },
   },
   // --- Project 管理 ---
@@ -151,6 +226,7 @@ export const toolDefinitions = [
           progress_stages: { type: "string", description: "阶段列表，逗号分隔（stage 模式）" },
           progress_items: { type: "string", description: "清单项，逗号分隔（checklist 模式）" },
           streak_goal: { type: "number", description: "连续目标天数（streak 模式）" },
+          daily_quota: { type: "number", description: "每日目标次数（streak 模式，如每天3杯水填3）" },
           confirmed_new: { type: "boolean", description: "是否已和用户确认这是新项目（必须为 true 才能创建）" },
         },
         required: ["name", "progress_type", "confirmed_new"],
@@ -181,7 +257,7 @@ export const toolDefinitions = [
         properties: {
           id: { type: "string", description: "项目 ID" },
           delta: { type: "number", description: "增量（percentage 模式加多少）" },
-          streak_action: { type: "string", enum: ["checkin", "break"], description: "打卡或断了（streak 模式）" },
+          streak_action: { type: "string", enum: ["checkin", "break", "daily_checkin"], description: "打卡或断了（streak 模式）；daily_checkin=今日配额+1（daily_quota 模式）" },
           advance_to_stage: { type: "number", description: "推进到第几阶段（stage 模式，从1开始）" },
           check_item: { type: "string", description: "完成的清单项名称（checklist 模式）" },
           note: { type: "string", description: "本次进展备注" },
@@ -202,14 +278,79 @@ export const toolDefinitions = [
     type: "function",
     function: {
       name: "archive_confirmed",
-      description: "用户确认后归档项目或任务。调用此工具会触发上下文重置。必须先和用户确认！",
+      description: "用户确认后归档项目、任务或独立提醒。调用此工具会触发上下文重置。必须先和用户确认！",
       parameters: {
         type: "object",
         properties: {
           project_ids: { type: "string", description: "要归档的项目 ID，逗号分隔" },
           task_ids: { type: "string", description: "要归档的任务 ID，逗号分隔" },
+          reminder_ids: { type: "string", description: "要归档的独立提醒 ID，逗号分隔" },
+          rule_ids: { type: "string", description: "要删除的用户规则 ID，逗号分隔" },
         },
         required: [],
+      },
+    },
+  },
+  // --- User Rule ---
+  {
+    type: "function",
+    function: {
+      name: "create_user_rule",
+      description: "创建用户自定义规则。调用前必须先调用 list_user_rules 检查：1) 是否有相同 trigger_condition 的规则（冲突则询问替换还是新建）；2) 是否有相同 activity 类型但矛盾的规则；3) 活跃规则总数是否已达 10 条（达到则提示用户先整理）。trigger_condition 格式：'daily:HH:mm' 或 'weekly:mon,wed,fri:HH:mm' 或 'activity:[类型]'。",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "规则名称，如'睡觉提醒'" },
+          trigger_condition: { type: "string", description: "触发条件，如 'daily:23:00' 或 'weekly:mon,wed:09:00'" },
+          message: { type: "string", description: "提醒内容" },
+          persistence: { type: "boolean", description: "是否持续提醒直到用户确认（默认 false）" },
+          repeat_interval_min: { type: "number", description: "持续提醒时的间隔分钟数（persistence=true 时有效，默认15分钟）" },
+          stop_condition: { type: "string", enum: ["user_confirms", "once"], description: "停止条件：user_confirms=用户确认后停；once=触发一次即停" },
+        },
+        required: ["name", "trigger_condition", "message"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_user_rules",
+      description: "查看所有用户规则",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_user_rule",
+      description: "修改或暂停/恢复用户规则",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          name: { type: "string" },
+          trigger_condition: { type: "string" },
+          message: { type: "string" },
+          persistence: { type: "boolean" },
+          repeat_interval_min: { type: "number" },
+          stop_condition: { type: "string", enum: ["user_confirms", "once"] },
+          status: { type: "string", enum: ["active", "paused"] },
+        },
+        required: ["id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "confirm_user_rule",
+      description: "用户确认已响应某条持续规则，停止今日重复提醒。用户说'好了'/'睡了'/'知道了'等回应持续提醒时调用。",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "规则 ID（可从活跃状态中获取）" },
+        },
+        required: ["id"],
       },
     },
   },
@@ -243,7 +384,7 @@ export const toolDefinitions = [
   },
 ];
 
-export function executeTool(name, args) {
+export async function executeTool(name, args) {
   const now = () => dayjs().format("YYYY-MM-DD HH:mm:ss");
 
   switch (name) {
@@ -258,7 +399,6 @@ export function executeTool(name, args) {
         category: args.category || null,
         importance: args.importance || "medium",
         urgency: args.urgency || "medium",
-        user_priority_override: null,
         estimated_duration_min: args.estimated_duration_min || null,
         hard_deadline: args.hard_deadline || null,
         flexible_deadline: args.flexible_deadline || null,
@@ -272,23 +412,79 @@ export function executeTool(name, args) {
         last_touched_at: new Date().toISOString(),
         notes: args.notes || null,
       };
-      return storage.createItem("tasks", task);
+      return await storage.createItem("tasks", task);
     }
 
     case "update_task": {
       const { id, ...updates } = args;
-      if (updates.status === "in_progress" || updates.status === "completed") {
+      updates.updated_at = new Date().toISOString();
+      if (["in_progress", "completed", "paused"].includes(updates.status)) {
         updates.last_touched_at = new Date().toISOString();
       }
-      const result = storage.updateItem("tasks", id, updates);
-      return result || { error: `Task ${id} not found` };
+      const result = await storage.updateItem("tasks", id, updates);
+      if (!result) return { error: `Task ${id} not found` };
+
+      // Auto-rebuild recurring task when completed
+      if (updates.status === "completed" && result.recurrence_rule) {
+        const rule = result.recurrence_rule; // "daily:HH:mm" or "weekly:mon,wed:HH:mm"
+        const parts = rule.split(":");
+        let nextStart = null;
+        const now = dayjs();
+
+        if (parts[0] === "daily") {
+          const [hh, mm] = parts[1].split(":").map(Number);
+          let candidate = now.startOf("day").add(hh, "hour").add(mm || 0, "minute");
+          if (candidate.isBefore(now)) candidate = candidate.add(1, "day");
+          nextStart = candidate.toISOString();
+        } else if (parts[0] === "weekly") {
+          const days = parts[1].split(",");
+          const dayNames = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+          const [hh, mm] = parts[2].split(":").map(Number);
+          let candidate = null;
+          for (let i = 1; i <= 7; i++) {
+            const d = now.add(i, "day");
+            if (days.includes(dayNames[d.day()])) {
+              candidate = d.startOf("day").add(hh, "hour").add(mm || 0, "minute");
+              break;
+            }
+          }
+          nextStart = candidate ? candidate.toISOString() : null;
+        }
+
+        if (nextStart) {
+          const newTask = {
+            id: randomUUID(),
+            title: result.title,
+            project: result.project,
+            category: result.category,
+            importance: result.importance,
+            urgency: result.urgency,
+            estimated_duration_min: result.estimated_duration_min,
+            hard_deadline: null,
+            flexible_deadline: null,
+            start_time: nextStart,
+            end_time: null,
+            execution_mode: result.execution_mode,
+            status: "pending",
+            recurrence_rule: result.recurrence_rule,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            last_touched_at: new Date().toISOString(),
+            notes: result.notes,
+          };
+          await storage.createItem("tasks", newTask);
+          return { ...result, recurrence_rebuilt: true, next_instance_start: nextStart };
+        }
+      }
+
+      return result;
     }
 
     case "list_tasks":
-      return storage.listItems("tasks", args);
+      return await storage.listItems("tasks", args);
 
     case "delete_task":
-      return storage.deleteItem("tasks", args.id)
+      return (await storage.deleteItem("tasks", args.id))
         ? { success: true }
         : { error: `Task ${args.id} not found` };
 
@@ -303,11 +499,16 @@ export function executeTool(name, args) {
         repeat_until_confirmed: args.repeat_until_confirmed || false,
         created_at: new Date().toISOString(),
       };
-      return storage.createItem("reminders", reminder);
+      return await storage.createItem("reminders", reminder);
+    }
+
+    case "list_reminders": {
+      const all = await storage.listItems("reminders");
+      return args.status ? all.filter(r => r.status === args.status) : all;
     }
 
     case "cancel_reminder": {
-      const result = storage.updateItem("reminders", args.id, { status: "dismissed" });
+      const result = await storage.updateItem("reminders", args.id, { status: "dismissed" });
       return result || { error: `Reminder ${args.id} not found` };
     }
 
@@ -318,17 +519,51 @@ export function executeTool(name, args) {
         end_time: args.end_time || null,
         activity_type: args.activity_type,
         related_task_id: args.related_task_id || null,
+        current_active_task: args.current_active_task || null,
+        expected_next_action: args.expected_next_action || null,
         checkin_status: "pending",
         interruption_reason: null,
         source: args.source || "ai_inferred",
       };
-      return storage.createItem("timeline", event);
+      // Infer interruptibility from activity unless user has manually set DND
+      inferFromActivity(args.activity_type);
+      return await storage.createItem("timeline", event);
     }
+
+    case "update_timeline": {
+      const { id, ...updates } = args;
+      const result = await storage.updateItem("timeline", id, updates);
+      return result || { error: `Timeline event ${id} not found` };
+    }
+
+    case "get_open_timeline": {
+      const all = await storage.listItems("timeline");
+      // most recent event without end_time
+      const open = all
+        .filter((e) => !e.end_time)
+        .sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
+      return open[0] || null;
+    }
+
+    case "set_interruptibility": {
+      if (args.status === "dnd_until_time" && !args.until) {
+        return { error: "dnd_until_time 模式必须提供 until 时间" };
+      }
+      const state = setState(args.status, {
+        until: args.until || null,
+        reason: args.reason || null,
+        set_by: "user",
+      });
+      return state;
+    }
+
+    case "get_interruptibility":
+      return getState();
 
     // --- Project ---
     case "match_existing_project": {
       const keyword = (args.keyword || "").toLowerCase();
-      const all = storage.listItems("projects");
+      const all = await storage.listItems("projects");
       const matches = all.filter((p) => {
         const name = (p.name || "").toLowerCase();
         const desc = (p.description || "").toLowerCase();
@@ -369,17 +604,20 @@ export function executeTool(name, args) {
         progress_items: args.progress_items || null,
         progress_items_done: null,
         streak_goal: args.streak_goal || null,
+        daily_quota: args.daily_quota || null,
+        daily_done: 0,
+        daily_reset_date: null,
         streak_current: 0,
         streak_longest: 0,
         streak_total: 0,
         last_progress_at: null,
         created_at: new Date().toISOString(),
       };
-      return storage.createItem("projects", project);
+      return await storage.createItem("projects", project);
     }
 
     case "update_project_progress": {
-      const project = storage.getItem("projects", args.id);
+      const project = await storage.getItem("projects", args.id);
       if (!project) return { error: `Project ${args.id} not found` };
 
       const updates = { last_progress_at: new Date().toISOString() };
@@ -403,6 +641,28 @@ export function executeTool(name, args) {
             : 0;
         } else if (args.streak_action === "break") {
           updates.streak_current = 0;
+        } else if (args.streak_action === "daily_checkin" && project.daily_quota) {
+          const today = dayjs().format("YYYY-MM-DD");
+          const dailyDone = project.daily_reset_date === today ? (project.daily_done || 0) : 0;
+          updates.daily_done = dailyDone + 1;
+          updates.daily_reset_date = today;
+          // When daily quota met, count as one streak day
+          if (updates.daily_done >= project.daily_quota) {
+            updates.streak_current = (project.streak_current || 0) + 1;
+            updates.streak_total = (project.streak_total || 0) + 1;
+            if (updates.streak_current > (project.streak_longest || 0)) {
+              updates.streak_longest = updates.streak_current;
+            }
+          }
+          updates.progress_percent = project.streak_goal
+            ? Math.min(100, Math.round(((updates.streak_current ?? project.streak_current) / project.streak_goal) * 100))
+            : Math.min(100, Math.round((updates.daily_done / project.daily_quota) * 100));
+          return {
+            ...(await storage.updateItem("projects", args.id, updates)),
+            daily_done: updates.daily_done,
+            daily_quota: project.daily_quota,
+            quota_met: updates.daily_done >= project.daily_quota,
+          };
         }
       }
 
@@ -432,39 +692,43 @@ export function executeTool(name, args) {
         project_id: args.id,
         project_name: project.name,
         logged_at: new Date().toISOString(),
-        delta: args.note || `+${args.delta || ""}${project.progress_unit || ""}`,
+        delta: args.note || (
+          args.streak_action === "checkin" ? `+1${project.progress_unit || "天"}` :
+          args.streak_action === "daily_checkin" ? `+1/${project.daily_quota}` :
+          `+${args.delta || ""}${project.progress_unit || ""}`
+        ),
         progress_after: updates.progress_percent ?? project.progress_percent,
         note: args.note || null,
       };
-      storage.createItem("progress_logs", log);
+      await storage.createItem("progress_logs", log);
 
-      const updated = storage.updateItem("projects", args.id, updates);
+      const updated = await storage.updateItem("projects", args.id, updates);
       return updated || { error: "Update failed" };
     }
 
     case "list_projects":
-      return storage.listItems("projects").filter((p) => ["active", "paused"].includes(p.status));
+      return (await storage.listItems("projects")).filter((p) => ["active", "paused"].includes(p.status));
 
     case "archive_confirmed": {
       const results = [];
 
       if (args.project_ids) {
         for (const pid of args.project_ids.split(",").map((s) => s.trim())) {
-          const p = storage.updateItem("projects", pid, { status: "archived" });
+          const p = await storage.updateItem("projects", pid, { status: "archived" });
           if (p) {
             // 归档关联任务
-            const tasks = storage.listItems("tasks", { project: p.name });
+            const tasks = await storage.listItems("tasks", { project: p.name });
             for (const t of tasks) {
               if (t.status !== "completed" && t.status !== "cancelled") {
-                storage.updateItem("tasks", t.id, { status: "cancelled" });
+                await storage.updateItem("tasks", t.id, { status: "cancelled" });
               }
             }
             // 归档关联提醒
-            const reminders = storage.listItems("reminders").filter(
+            const reminders = (await storage.listItems("reminders")).filter(
               (r) => r.status === "pending" && r.task_id && tasks.some((t) => t.id === r.task_id)
             );
             for (const r of reminders) {
-              storage.updateItem("reminders", r.id, { status: "dismissed" });
+              await storage.updateItem("reminders", r.id, { status: "dismissed" });
             }
             results.push(`项目「${p.name}」已归档`);
           }
@@ -473,12 +737,61 @@ export function executeTool(name, args) {
 
       if (args.task_ids) {
         for (const tid of args.task_ids.split(",").map((s) => s.trim())) {
-          const t = storage.updateItem("tasks", tid, { status: "completed" });
+          const t = await storage.updateItem("tasks", tid, { status: "completed" });
           if (t) results.push(`任务「${t.title}」已完成归档`);
         }
       }
 
+      if (args.reminder_ids) {
+        for (const rid of args.reminder_ids.split(",").map((s) => s.trim())) {
+          const r = await storage.updateItem("reminders", rid, { status: "dismissed" });
+          if (r) results.push(`提醒「${r.message?.slice(0, 20)}」已归档`);
+        }
+      }
+
+      if (args.rule_ids) {
+        for (const rid of args.rule_ids.split(",").map((s) => s.trim())) {
+          const r = await storage.updateItem("user_rules", rid, { status: "inactive" });
+          if (r) results.push(`规则「${r.name}」已停用`);
+        }
+      }
+
       return { archived: results, context_reset: true };
+    }
+
+    // --- User Rule ---
+    case "create_user_rule": {
+      const rule = {
+        id: randomUUID(),
+        name: args.name,
+        trigger_condition: args.trigger_condition,
+        message: args.message,
+        persistence: args.persistence ?? false,
+        repeat_interval_min: args.repeat_interval_min ?? 15,
+        stop_condition: args.stop_condition ?? (args.persistence ? "user_confirms" : "once"),
+        status: "active",
+        last_triggered_date: null,
+        last_fired_at: null,
+        confirmed_at: null,
+        created_at: new Date().toISOString(),
+      };
+      return await storage.createItem("user_rules", rule);
+    }
+
+    case "list_user_rules":
+      return await storage.listItems("user_rules");
+
+    case "update_user_rule": {
+      const { id, ...updates } = args;
+      const result = await storage.updateItem("user_rules", id, updates);
+      return result || { error: `Rule ${id} not found` };
+    }
+
+    case "confirm_user_rule": {
+      const result = await storage.updateItem("user_rules", args.id, {
+        confirmed_at: new Date().toISOString(),
+      });
+      return result || { error: `Rule ${args.id} not found` };
     }
 
     // --- File ops ---
