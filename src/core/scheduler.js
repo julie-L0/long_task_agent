@@ -145,7 +145,7 @@ async function checkExpectedNextAction() {
 
   const all = await storage.listItems("timeline");
   const openWithNext = all.filter(
-    (e) => !e.end_time && e.expected_next_action
+    (e) => !e.end_time && e.expected_next_action && !e.next_action_notified
   );
 
   for (const event of openWithNext) {
@@ -163,7 +163,7 @@ async function checkExpectedNextAction() {
       });
     }
     // Mark as notified to avoid repeat (store end_time won't work, use a flag)
-    await storage.updateItem("timeline", event.id, { expected_next_action: null });
+    await storage.updateItem("timeline", event.id, { next_action_notified: true });
   }
 }
 
