@@ -16,7 +16,7 @@
 ### 安装
 
 ```bash
-git clone <repo>
+git clone https://github.com/julie-L0/long_task_agent
 cd long-task-agent
 node scripts/setup.js
 ```
