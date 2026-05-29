@@ -432,14 +432,16 @@ export async function executeTool(name, args) {
         const now = dayjs();
 
         if (parts[0] === "daily") {
-          const [hh, mm] = parts[1].split(":").map(Number);
+          const timePart = parts.slice(1).join(":");
+          const [hh, mm] = timePart.split(":").map(Number);
           let candidate = now.startOf("day").add(hh, "hour").add(mm || 0, "minute");
           if (candidate.isBefore(now)) candidate = candidate.add(1, "day");
           nextStart = candidate.toISOString();
         } else if (parts[0] === "weekly") {
           const days = parts[1].split(",");
           const dayNames = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-          const [hh, mm] = parts[2].split(":").map(Number);
+          const timePart = parts.slice(2).join(":");
+          const [hh, mm] = timePart.split(":").map(Number);
           let candidate = null;
           for (let i = 1; i <= 7; i++) {
             const d = now.add(i, "day");
