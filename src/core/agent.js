@@ -89,8 +89,9 @@ async function loadActiveContext() {
 
   if (pendingReminders.length) {
     contextBlock += "\n### 待触发提醒\n";
-    for (const r of pendingReminders) {
-      contextBlock += `- ${dayjs(r.trigger_at).format("MM-DD HH:mm")} | ${r.message}\n`;
+    for (const r of pendingReminders.sort((a, b) => new Date(a.trigger_at) - new Date(b.trigger_at))) {
+      const taskLink = r.task_id ? `task_id:${r.task_id}` : "task_id:无";
+      contextBlock += `- ${dayjs(r.trigger_at).format("MM-DD HH:mm")} | ${r.message} | ${taskLink} | id:${r.id}\n`;
     }
   }
 

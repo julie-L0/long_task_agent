@@ -18,7 +18,7 @@ export const toolDefinitions = [
     type: "function",
     function: {
       name: "create_task",
-      description: "创建一个新任务。如果用户指令模糊（如'论文'），必须先检查活跃状态中是否已有相关任务，和用户确认后再创建。",
+      description: "创建一个新任务。任务标题不够详细时不要追问，直接用用户原话建任务；只有多个活跃任务/项目都可能匹配、会造成重复或用户要修改既有项但对象不唯一时，才和用户确认。",
       parameters: {
         type: "object",
         properties: {
@@ -491,11 +491,40 @@ export async function executeTool(name, args) {
         : { error: `Task ${args.id} not found` };
 
     case "create_reminder": {
+      const reminderType = args.type || "task_start";
+      let taskId = args.task_id || null;
+
+      if (!taskId && ["task_start", "task_deadline"].includes(reminderType)) {
+        const triggerAt = args.trigger_at;
+        const linkedTask = {
+          id: randomUUID(),
+          title: args.message,
+          project: null,
+          category: null,
+          importance: "medium",
+          urgency: "medium",
+          estimated_duration_min: null,
+          hard_deadline: reminderType === "task_deadline" ? triggerAt : null,
+          flexible_deadline: null,
+          start_time: reminderType === "task_start" ? triggerAt : null,
+          end_time: null,
+          execution_mode: "deferrable",
+          status: "pending",
+          recurrence_rule: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          last_touched_at: new Date().toISOString(),
+          notes: "auto_created_from_reminder",
+        };
+        await storage.createItem("tasks", linkedTask);
+        taskId = linkedTask.id;
+      }
+
       const reminder = {
         id: randomUUID(),
-        task_id: args.task_id || null,
+        task_id: taskId,
         trigger_at: args.trigger_at,
-        type: args.type || "task_start",
+        type: reminderType,
         message: args.message,
         status: "pending",
         repeat_until_confirmed: args.repeat_until_confirmed || false,
@@ -764,10 +793,11 @@ export async function executeTool(name, args) {
 
     // --- User Rule ---
     case "create_user_rule": {
-      // Auto-correct: recurring rules with "每天"/"每周" in message should be persistent
+      // "每天/每周" only describes schedule recurrence. Persistence means repeating
+      // after the scheduled time until the user confirms, and requires explicit intent.
       let persistence = args.persistence ?? false;
       const isRecurring = /^(daily|weekly):/.test(args.trigger_condition);
-      const wantsRepeat = /每天|每周|每日|直到|提醒到/.test(args.message || "");
+      const wantsRepeat = /直到|提醒到|一直提醒|反复提醒|持续提醒/.test(args.message || "");
       if (isRecurring && wantsRepeat && !persistence) {
         persistence = true;
       }

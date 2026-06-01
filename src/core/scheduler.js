@@ -66,6 +66,10 @@ function shouldTriggerRule(rule, now) {
   }
 
   const [hh, mm] = triggerTime.split(":").map(Number);
+  if (!/^\d{1,2}:\d{2}$/.test(triggerTime) || hh < 0 || hh > 23 || mm < 0 || mm > 59) {
+    console.warn(`[scheduler] invalid user rule trigger_condition: ${rule.trigger_condition} (${rule.id})`);
+    return false;
+  }
   const triggerMoment = now.startOf("day").add(hh, "hour").add(mm || 0, "minute");
   if (now.isBefore(triggerMoment)) return false; // time hasn't come yet
 
