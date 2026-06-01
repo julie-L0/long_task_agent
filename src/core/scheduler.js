@@ -56,11 +56,11 @@ function shouldTriggerRule(rule, now) {
 
   let triggerTime; // "HH:mm"
   if (type === "daily") {
-    triggerTime = parts[1]; // e.g. "23:00"
+    triggerTime = parts.slice(1).join(":"); // e.g. "23:00"
   } else if (type === "weekly") {
     const days = parts[1].split(","); // e.g. ["mon","wed","fri"]
     if (!days.includes(todayName)) return false;
-    triggerTime = parts[2]; // e.g. "09:00"
+    triggerTime = parts.slice(2).join(":"); // e.g. "09:00"
   } else {
     return false;
   }
