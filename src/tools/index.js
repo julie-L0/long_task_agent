@@ -764,14 +764,21 @@ export async function executeTool(name, args) {
 
     // --- User Rule ---
     case "create_user_rule": {
+      // Auto-correct: recurring rules with "每天"/"每周" in message should be persistent
+      let persistence = args.persistence ?? false;
+      const isRecurring = /^(daily|weekly):/.test(args.trigger_condition);
+      const wantsRepeat = /每天|每周|每日|直到|提醒到/.test(args.message || "");
+      if (isRecurring && wantsRepeat && !persistence) {
+        persistence = true;
+      }
       const rule = {
         id: randomUUID(),
         name: args.name,
         trigger_condition: args.trigger_condition,
         message: args.message,
-        persistence: args.persistence ?? false,
+        persistence,
         repeat_interval_min: args.repeat_interval_min ?? 15,
-        stop_condition: args.stop_condition ?? (args.persistence ? "user_confirms" : "once"),
+        stop_condition: args.stop_condition ?? (persistence ? "user_confirms" : "once"),
         status: "active",
         last_triggered_date: null,
         last_fired_at: null,
