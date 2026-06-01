@@ -17,12 +17,37 @@ function tableId(collection) {
   return id;
 }
 
+const MAX_RETRIES = 1;
+const RETRY_DELAY_MS = 2000;
+
 async function lark(args) {
-  const { stdout } = await execFileAsync(LARK_CLI, args, {
-    env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH || ""}` },
-    maxBuffer: 10 * 1024 * 1024,
-  });
-  return JSON.parse(stdout);
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const { stdout } = await execFileAsync(LARK_CLI, args, {
+        env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH || ""}` },
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: 30_000,
+      });
+      const result = JSON.parse(stdout);
+      if (result.ok === false) {
+        const msg = result.error?.message || "unknown";
+        if (attempt < MAX_RETRIES && /timed out|ECONNRESET|ETIMEDOUT|5\d\d/.test(msg)) {
+          await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+        throw new Error(`飞书接口错误: ${result.error?.hint || msg}`);
+      }
+      return result;
+    } catch (e) {
+      if (attempt < MAX_RETRIES && /timed out|ECONNRESET|ETIMEDOUT|killed/.test(e.message)) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+        continue;
+      }
+      // Sanitize error for user-facing display
+      const clean = e.message.replace(/https?:\/\/[^\s"]+/g, "[飞书API]").replace(/\d+\.\d+\.\d+\.\d+:\d+/g, "[addr]");
+      throw new Error(`飞书暂时连不上（${clean.slice(0, 80)}）`);
+    }
+  }
 }
 
 // +record-list --format json returns tabular data, not {record_id, fields} objects.
