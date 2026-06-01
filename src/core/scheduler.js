@@ -111,10 +111,17 @@ async function checkUserRules() {
 let lastSilenceCheckAt = null;
 const SILENCE_CHECK_COOLDOWN_MIN = 30;
 
+async function hasActiveTimer() {
+  const timeline = await storage.listItems("timeline");
+  return timeline.some((e) => !e.end_time && e.activity_type);
+}
+
 async function checkSilence() {
   const now = dayjs();
   const hour = now.hour();
   if (hour < 8 || hour >= 23) return;
+
+  if (await hasActiveTimer()) return; // user is in a timed session, don't interrupt
 
   const lastMsg = getLastMessageAt();
   if (!lastMsg) return;
@@ -176,6 +183,8 @@ async function checkDeferrableOpportunity() {
   const now = dayjs();
   const hour = now.hour();
   if (hour < 8 || hour >= 23) return;
+
+  if (await hasActiveTimer()) return; // user is in a timed session
 
   if (lastDeferrableCheckAt && now.diff(dayjs(lastDeferrableCheckAt), "minute") < DEFERRABLE_CHECK_COOLDOWN_MIN) return;
 
