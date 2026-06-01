@@ -174,9 +174,11 @@ export async function createItem(collection, item) {
   return item;
 }
 
-export async function updateItem(collection, id, updates) {
-  const items = await allRecords(collection);
-  const existing = items.find((item) => item.id === id);
+// existingHint: pass the already-fetched item to skip a redundant allRecords round-trip.
+// Critical for read-modify-write callers: avoids a second bitable read between the read
+// and write, which can return stale data and cause the write to appear to use wrong state.
+export async function updateItem(collection, id, updates, existingHint = null) {
+  const existing = existingHint ?? (await allRecords(collection)).find((item) => item.id === id);
   if (!existing) return null;
 
   const patch = {};

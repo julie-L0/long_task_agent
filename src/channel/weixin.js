@@ -66,7 +66,7 @@ export function createWeixinChannel({ onMessage }) {
   const contextTokens = {};
   const seenMsgIds = new Set(); // dedup by msg_id
   const recentMsgKeys = new Map(); // dedup by content (iLink re-delivers with new msg_id on reconnect)
-  const CONTENT_DEDUP_MS = 5 * 60_000; // 5 minutes
+  const CONTENT_DEDUP_MS = 15 * 60_000; // 15 minutes — iLink re-delivers on reconnect, typical interval is ~10–17 min
   let syncBuffer = "";
   let stopped = false;
 

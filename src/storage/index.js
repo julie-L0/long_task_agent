@@ -23,9 +23,9 @@ export const createItem = (collection, item) =>
     ? bitable().then((b) => b.createItem(collection, item))
     : Promise.resolve(local.createItem(collection, item));
 
-export const updateItem = (collection, id, updates) =>
+export const updateItem = (collection, id, updates, existingHint = null) =>
   useBitable()
-    ? bitable().then((b) => b.updateItem(collection, id, updates))
+    ? bitable().then((b) => b.updateItem(collection, id, updates, existingHint))
     : Promise.resolve(local.updateItem(collection, id, updates));
 
 export const deleteItem = (collection, id) =>

@@ -648,7 +648,7 @@ export async function executeTool(name, args) {
             ? Math.min(100, Math.round(((updates.streak_current ?? project.streak_current) / project.streak_goal) * 100))
             : Math.min(100, Math.round((updates.daily_done / project.daily_quota) * 100));
           return {
-            ...(await storage.updateItem("projects", args.id, updates)),
+            ...(await storage.updateItem("projects", args.id, updates, project)),
             daily_done: updates.daily_done,
             daily_quota: project.daily_quota,
             quota_met: updates.daily_done >= project.daily_quota,
