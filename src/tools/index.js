@@ -632,23 +632,11 @@ export async function executeTool(name, args) {
       }
 
       if (project.progress_type === "streak") {
-        if (args.streak_action === "checkin") {
-          updates.streak_current = (project.streak_current || 0) + 1;
-          updates.streak_total = (project.streak_total || 0) + 1;
-          if (updates.streak_current > (project.streak_longest || 0)) {
-            updates.streak_longest = updates.streak_current;
-          }
-          updates.progress_percent = project.streak_goal
-            ? Math.min(100, Math.round((updates.streak_current / project.streak_goal) * 100))
-            : 0;
-        } else if (args.streak_action === "break") {
-          updates.streak_current = 0;
-        } else if (args.streak_action === "daily_checkin" && project.daily_quota) {
+        if (args.streak_action === "daily_checkin" && project.daily_quota) {
           const today = dayjs().format("YYYY-MM-DD");
           const dailyDone = project.daily_reset_date === today ? (project.daily_done || 0) : 0;
           updates.daily_done = dailyDone + 1;
           updates.daily_reset_date = today;
-          // When daily quota met, count as one streak day
           if (updates.daily_done >= project.daily_quota) {
             updates.streak_current = (project.streak_current || 0) + 1;
             updates.streak_total = (project.streak_total || 0) + 1;
@@ -665,6 +653,19 @@ export async function executeTool(name, args) {
             daily_quota: project.daily_quota,
             quota_met: updates.daily_done >= project.daily_quota,
           };
+        } else if (project.daily_quota) {
+          return { error: `「${project.name}」是每日配额项目，请使用 streak_action="daily_checkin"，不要用 "${args.streak_action}"` };
+        } else if (args.streak_action === "checkin") {
+          updates.streak_current = (project.streak_current || 0) + 1;
+          updates.streak_total = (project.streak_total || 0) + 1;
+          if (updates.streak_current > (project.streak_longest || 0)) {
+            updates.streak_longest = updates.streak_current;
+          }
+          updates.progress_percent = project.streak_goal
+            ? Math.min(100, Math.round((updates.streak_current / project.streak_goal) * 100))
+            : 0;
+        } else if (args.streak_action === "break") {
+          updates.streak_current = 0;
         }
       }
 

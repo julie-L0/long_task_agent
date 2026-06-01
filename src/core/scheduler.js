@@ -337,11 +337,14 @@ async function checkStreakBreaks() {
     (p) => p.status === "active" && p.progress_type === "streak" && (p.streak_current || 0) > 0
   );
   for (const p of projects) {
+    // For daily_quota projects: check daily_reset_date (more reliable than last_progress_at)
+    if (p.daily_quota) {
+      if (p.daily_reset_date && p.daily_reset_date >= yesterday) continue; // active yesterday or today
+    }
     if (!p.last_progress_at) continue;
     const lastDate = dayjs(p.last_progress_at).format("YYYY-MM-DD");
-    // If last checkin was before yesterday, streak is broken
     if (lastDate < yesterday) {
-      await storage.updateItem("projects", p.id, { streak_current: 0, daily_done: 0, daily_reset_date: null });
+      await storage.updateItem("projects", p.id, { streak_current: 0 });
       console.log(`[scheduler] streak broken for project "${p.name}"`);
     }
   }
