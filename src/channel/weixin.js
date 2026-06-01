@@ -70,26 +70,46 @@ export function createWeixinChannel({ onMessage }) {
   let syncBuffer = "";
   let stopped = false;
 
+  const pendingSends = []; // messages that failed to send, retry on next successful poll
+  let consecutiveErrors = 0;
+
   async function sendText(userId, text) {
     const ctxToken = contextTokens[userId] || "";
     const parts = chunkText(text);
     for (const chunk of parts) {
-      await apiPost(
-        "ilink/bot/sendmessage",
-        {
-          msg: {
-            from_user_id: "",
-            to_user_id: userId,
-            client_id: `xly-${randomUUID()}`,
-            message_type: 2,
-            message_state: 2,
-            item_list: [{ type: 1, text_item: { text: chunk } }],
-            context_token: ctxToken,
+      try {
+        await apiPost(
+          "ilink/bot/sendmessage",
+          {
+            msg: {
+              from_user_id: "",
+              to_user_id: userId,
+              client_id: `xly-${randomUUID()}`,
+              message_type: 2,
+              message_state: 2,
+              item_list: [{ type: 1, text_item: { text: chunk } }],
+              context_token: ctxToken,
+            },
+            base_info: { channel_version: CHANNEL_VERSION },
           },
-          base_info: { channel_version: CHANNEL_VERSION },
-        },
-        token
-      );
+          token
+        );
+      } catch (e) {
+        console.error("[weixin] send failed, queued for retry:", e.message);
+        pendingSends.push({ userId, text: chunk });
+      }
+    }
+  }
+
+  async function flushPendingSends() {
+    while (pendingSends.length) {
+      const { userId, text } = pendingSends.shift();
+      try {
+        await sendText(userId, text);
+      } catch {
+        pendingSends.unshift({ userId, text });
+        break;
+      }
     }
   }
 
@@ -148,13 +168,23 @@ export function createWeixinChannel({ onMessage }) {
         clearTimeout(timer);
         const data = await res.json();
         if (data.get_updates_buf) syncBuffer = data.get_updates_buf;
+        // Reconnected after errors — flush queued messages
+        if (consecutiveErrors > 0) {
+          console.log(`[weixin] reconnected after ${consecutiveErrors} errors, flushing ${pendingSends.length} queued messages`);
+          flushPendingSends();
+        }
+        consecutiveErrors = 0;
         for (const msg of data.msgs || []) processMsg(msg);
       } catch (e) {
         clearTimeout(timer);
         if (e.name === "AbortError" || stopped) continue;
+        consecutiveErrors++;
         const causeCode = e.cause?.code || "";
         const causeMsg = e.cause?.message || e.cause || "";
         if (causeCode === "ECONNRESET" || String(causeMsg).includes("ECONNRESET")) continue;
+        if (consecutiveErrors >= 5 && consecutiveErrors % 5 === 0) {
+          console.error(`[weixin] ${consecutiveErrors} consecutive poll errors — connection may be down`);
+        }
         console.error("[weixin] poll error:", e.message, causeMsg ? `(${causeMsg})` : "");
         await new Promise((r) => setTimeout(r, POLL_RETRY_DELAY_MS));
       }
