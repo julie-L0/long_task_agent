@@ -120,7 +120,7 @@ async function loadActiveContext() {
     contextBlock += `- 状态：勿扰（原因：${dnd.reason || "未说明"}，等待用户说恢复）\n`;
   }
 
-  const isNewUser = !allTasks.length && !projects.length && !rules.length;
+  const isNewUser = !activeRules.some((r) => r.trigger_condition === "persona");
   return { contextBlock, isNewUser };
 }
 
