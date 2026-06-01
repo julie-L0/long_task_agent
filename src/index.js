@@ -88,7 +88,7 @@ async function handleMessage(input, userId, source = "user") {
     try {
       // /new: ask agent to verify nothing is unsaved, then reset context
       const actualInput = input.trim() === "/new"
-        ? "[系统指令] 用户发起 /new 上下文重置。请检查当前对话历史中是否有提到但尚未写入存储的任务、进度、提醒或规则。如果有遗漏，先补写入，然后回复用户"已确认数据完整，上下文已清空"并调用 archive_confirmed({}) 触发重置。如果没有遗漏，直接回复并调用 archive_confirmed({})。"
+        ? `[系统指令] 用户发起 /new 上下文重置。请检查当前对话历史中是否有提到但尚未写入存储的任务、进度、提醒或规则。如果有遗漏，先补写入，然后回复用户"已确认数据完整，上下文已清空"并调用 archive_confirmed({}) 触发重置。如果没有遗漏，直接回复并调用 archive_confirmed({})。`
         : input;
 
       const { reply, shouldResetContext } = await runAgent(actualInput, conversationHistory);
