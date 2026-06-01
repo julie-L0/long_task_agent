@@ -155,14 +155,23 @@ export async function runAgent(userMessage, conversationHistory = []) {
 
   let round = 0;
   let shouldResetContext = false;
+  const WRITE_TOOLS = new Set(["create_task", "create_reminder", "create_project", "update_task", "update_project_progress", "create_user_rule", "log_timeline", "set_interruptibility"]);
+  let hasWritten = false;
 
   while (round < MAX_TOOL_ROUNDS) {
     round++;
     const response = await chatCompletion({ messages, tools: toolDefinitions });
 
     if (!response.tool_calls?.length) {
+      const reply = response.content || "";
+      // Guard: if reply says ✅ 已记录 but no write tool was called, force a correction round
+      if (reply.includes("✅") && !hasWritten && round < MAX_TOOL_ROUNDS) {
+        messages.push(response);
+        messages.push({ role: "user", content: "[系统校验] 你回复了 ✅ 已记录，但本轮没有调用任何写入工具。请立刻调用对应工具完成写入，或者去掉 ✅ 重新回复。" });
+        continue;
+      }
       return {
-        reply: response.content || "",
+        reply,
         messages: [...messages, response],
         shouldResetContext,
       };
@@ -179,6 +188,7 @@ export async function runAgent(userMessage, conversationHistory = []) {
       }
       const result = await executeTool(toolCall.function.name, args);
 
+      if (WRITE_TOOLS.has(toolCall.function.name)) hasWritten = true;
       if (toolCall.function.name === "archive_confirmed") {
         shouldResetContext = true;
       }
