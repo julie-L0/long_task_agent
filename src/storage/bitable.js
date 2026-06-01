@@ -1,8 +1,22 @@
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import { promisify } from "util";
+import { existsSync } from "fs";
 
 const execFileAsync = promisify(execFile);
-const LARK_CLI = "/opt/homebrew/bin/lark-cli";
+
+function findLarkCli() {
+  if (process.env.LARK_CLI_PATH && existsSync(process.env.LARK_CLI_PATH)) return process.env.LARK_CLI_PATH;
+  const candidates = process.platform === "win32"
+    ? ["lark-cli.exe", `${process.env.LOCALAPPDATA || ""}\\lark-cli\\lark-cli.exe`]
+    : ["/opt/homebrew/bin/lark-cli", "/usr/local/bin/lark-cli"];
+  for (const p of candidates) { if (p && existsSync(p)) return p; }
+  try {
+    const cmd = process.platform === "win32" ? "where" : "which";
+    return execFileSync(cmd, ["lark-cli"], { encoding: "utf8" }).trim().split("\n")[0];
+  } catch { return "lark-cli"; }
+}
+
+const LARK_CLI = findLarkCli();
 
 function baseToken() {
   const t = process.env.BITABLE_APP_TOKEN;
@@ -24,7 +38,7 @@ async function lark(args) {
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const { stdout } = await execFileAsync(LARK_CLI, args, {
-        env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH || ""}` },
+        env: { ...process.env, PATH: process.platform === "win32" ? process.env.PATH : `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}` },
         maxBuffer: 10 * 1024 * 1024,
         timeout: 30_000,
       });

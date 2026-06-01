@@ -12,14 +12,27 @@
  * 完成后会自动把 BITABLE_* 变量写入项目根目录的 .env 文件。
  */
 
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import { promisify } from "util";
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
 const execFileAsync = promisify(execFile);
-const LARK = "/opt/homebrew/bin/lark-cli";
+
+function findLarkCli() {
+  if (process.env.LARK_CLI_PATH && existsSync(process.env.LARK_CLI_PATH)) return process.env.LARK_CLI_PATH;
+  const candidates = process.platform === "win32"
+    ? ["lark-cli.exe", `${process.env.LOCALAPPDATA || ""}\\lark-cli\\lark-cli.exe`]
+    : ["/opt/homebrew/bin/lark-cli", "/usr/local/bin/lark-cli"];
+  for (const p of candidates) { if (p && existsSync(p)) return p; }
+  try {
+    const cmd = process.platform === "win32" ? "where" : "which";
+    return execFileSync(cmd, ["lark-cli"], { encoding: "utf8" }).trim().split("\n")[0];
+  } catch { return "lark-cli"; }
+}
+
+const LARK = findLarkCli();
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ENV_FILE = resolve(ROOT, ".env");
 const BASE_NAME = "小柳数据";
@@ -166,7 +179,7 @@ const TABLES = [
 
 async function lark(args) {
   const { stdout } = await execFileAsync(LARK, args, {
-    env: { ...process.env, PATH: `/opt/homebrew/bin:${process.env.PATH || ""}` },
+    env: { ...process.env, PATH: process.platform === "win32" ? process.env.PATH : `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}` },
     maxBuffer: 10 * 1024 * 1024,
   });
   return JSON.parse(stdout);
