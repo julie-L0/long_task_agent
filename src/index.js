@@ -20,16 +20,42 @@ if (!process.argv[1]?.endsWith("index.js")) {
 
 // Single-instance guard: kill previous process and wait for it to exit
 const PID_FILE = new URL("../data/agent.pid", import.meta.url).pathname;
+function readPidFile() {
+  try {
+    return readFileSync(PID_FILE, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function removePidFileIfOwned() {
+  if (readPidFile() === String(process.pid)) {
+    try { unlinkSync(PID_FILE); } catch {}
+  }
+}
+
+function removePidFile() {
+  try { unlinkSync(PID_FILE); } catch {}
+}
+
 if (existsSync(PID_FILE)) {
-  const oldPid = parseInt(readFileSync(PID_FILE, "utf8").trim(), 10);
+  const oldPid = parseInt(readPidFile(), 10);
   if (oldPid && oldPid !== process.pid) {
     try {
-      process.kill(oldPid, "SIGTERM");
-      console.log(`[guard] killed previous instance (pid ${oldPid}), waiting...`);
-      // Poll until old process is gone (max 3s)
-      for (let i = 0; i < 30; i++) {
-        await new Promise(r => setTimeout(r, 100));
-        try { process.kill(oldPid, 0); } catch { break; } // process gone
+      try {
+        process.kill(oldPid, 0);
+      } catch {
+        console.log(`[guard] removed stale pid file (pid ${oldPid} not running)`);
+        removePidFile();
+      }
+      if (existsSync(PID_FILE)) {
+        process.kill(oldPid, "SIGTERM");
+        console.log(`[guard] killed previous instance (pid ${oldPid}), waiting...`);
+        // Poll until old process is gone (max 3s)
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 100));
+          try { process.kill(oldPid, 0); } catch { break; } // process gone
+        }
       }
     } catch {}
   }
@@ -37,12 +63,12 @@ if (existsSync(PID_FILE)) {
 writeFileSync(PID_FILE, String(process.pid), "utf8");
 for (const sig of ["SIGINT", "SIGTERM"]) {
   process.on(sig, () => {
-    try { unlinkSync(PID_FILE); } catch {}
+    removePidFileIfOwned();
     if (channel?.stop) channel.stop();
     process.exit(0);
   });
 }
-process.on("exit", () => { try { unlinkSync(PID_FILE); } catch {} });
+process.on("exit", removePidFileIfOwned);
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -51,6 +77,11 @@ dayjs.tz.setDefault(config.timezone);
 
 const CHANNEL = process.env.CHANNEL || "cli";
 const SILENCE_THRESHOLD_MIN = Number(process.env.SILENCE_THRESHOLD_MIN) || 60;
+const INSTANCE_ID = `${process.pid}-${Date.now().toString(36)}`;
+
+export function isCurrentInstance() {
+  return readPidFile() === String(process.pid);
+}
 
 let conversationHistory = [];
 const MAX_HISTORY = 20;
@@ -163,8 +194,14 @@ function parseDoNotAskUntil(input) {
 }
 
 async function handleMessage(input, userId, source = "user") {
+  if (!isCurrentInstance()) {
+    console.warn(`[index] stale instance ignored message pid=${process.pid} instance=${INSTANCE_ID}`);
+    if (channel?.stop) channel.stop();
+    return;
+  }
+
   const key = `${userId || ""}:${input}`;
-  console.log(`[index] handleMessage(${source}): "${input.slice(0, 40)}" pending=${pendingKeys.has(key)}`);
+  console.log(`[index] handleMessage(${source}) pid=${process.pid} instance=${INSTANCE_ID}: "${input.slice(0, 40)}" pending=${pendingKeys.has(key)}`);
   if (pendingKeys.has(key)) return;
   pendingKeys.add(key);
 
@@ -266,6 +303,7 @@ console.log(`\n${"═".repeat(40)}`);
 console.log(`  ${config.agentName}已启动 ✓`);
 console.log(`  ${dayjs().format("YYYY-MM-DD HH:mm (dddd)")}`);
 console.log(`  通道：${CHANNEL}`);
+console.log(`  PID：${process.pid} instance=${INSTANCE_ID}`);
 console.log(`${"═".repeat(40)}`);
 
 setReminderHandler(handleReminder);
@@ -273,7 +311,7 @@ setSilenceDetectionSource(getLastMessageAt, getSilenceThresholdMin);
 await normalizeOpenTimelineEvents().catch((err) => console.error("[timeline] normalize failed:", err.message));
 
 if (CHANNEL === "weixin") {
-  channel = createWeixinChannel({ onMessage: handleMessage });
+  channel = createWeixinChannel({ onMessage: handleMessage, isCurrentInstance });
 } else {
   channel = createCLI({ onMessage: handleMessage });
   channel.prompt();

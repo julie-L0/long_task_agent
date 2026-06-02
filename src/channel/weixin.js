@@ -57,7 +57,7 @@ function chunkText(text) {
   return chunks;
 }
 
-export function createWeixinChannel({ onMessage }) {
+export function createWeixinChannel({ onMessage, isCurrentInstance = () => true }) {
   const token = process.env.WEIXIN_BOT_TOKEN?.trim();
   if (!token) throw new Error("Missing WEIXIN_BOT_TOKEN — run: node scripts/weixin-login.js");
 
@@ -156,6 +156,12 @@ export function createWeixinChannel({ onMessage }) {
 
   async function pollLoop() {
     while (!stopped) {
+      if (!isCurrentInstance()) {
+        console.warn("[weixin] stale instance detected, stopping poll loop");
+        stop();
+        break;
+      }
+
       pollAbort = new AbortController();
       const timer = setTimeout(() => pollAbort.abort(), LONG_POLL_TIMEOUT_MS + 5_000);
       try {
