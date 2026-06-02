@@ -18,6 +18,7 @@ export function setSilenceDetectionSource(getLastMsg, getThreshold) {
 
 async function checkReminders() {
   autoExpire(); // reset dnd_until_time if expired
+  if (!isInterruptible()) return;
 
   const now = dayjs();
   const reminders = (await storage.listItems("reminders")).filter(r => r.status === "pending");
@@ -58,6 +59,10 @@ function shouldTriggerRule(rule, now) {
   if (type === "daily") {
     triggerTime = parts.slice(1).join(":"); // e.g. "23:00"
   } else if (type === "weekly") {
+    if (!parts[1]) {
+      console.warn(`[scheduler] invalid user rule trigger_condition: ${rule.trigger_condition} (${rule.id})`);
+      return false;
+    }
     const days = parts[1].split(","); // e.g. ["mon","wed","fri"]
     if (!days.includes(todayName)) return false;
     triggerTime = parts.slice(2).join(":"); // e.g. "09:00"
@@ -73,13 +78,16 @@ function shouldTriggerRule(rule, now) {
   const triggerMoment = now.startOf("day").add(hh, "hour").add(mm || 0, "minute");
   if (now.isBefore(triggerMoment)) return false; // time hasn't come yet
 
+  if (rule.persistence && rule.stop_condition === "user_confirms") {
+    const confirmedToday = rule.confirmed_at && dayjs(rule.confirmed_at).isSame(now, "day");
+    if (confirmedToday) return false;
+  }
+
   // New day: hasn't triggered today
   if (rule.last_triggered_date !== today) return true;
 
   // Same day + persistence: repeat if interval passed and not confirmed today
   if (rule.persistence && rule.stop_condition === "user_confirms") {
-    const confirmedToday = rule.confirmed_at && rule.confirmed_at.startsWith(today);
-    if (confirmedToday) return false;
     const lastFired = rule.last_fired_at ? dayjs(rule.last_fired_at) : null;
     if (!lastFired) return true;
     return now.diff(lastFired, "minute") >= (rule.repeat_interval_min ?? 15);
@@ -89,6 +97,9 @@ function shouldTriggerRule(rule, now) {
 }
 
 async function checkUserRules() {
+  autoExpire();
+  if (!isInterruptible()) return;
+
   const now = dayjs();
   const today = now.format("YYYY-MM-DD");
   const rules = (await storage.listItems("user_rules")).filter((r) => r.status === "active" && r.trigger_condition !== "persona");
@@ -107,6 +118,8 @@ async function checkUserRules() {
         type: "user_rule",
         message: rule.message,
         rule_name: rule.name,
+        persistence: rule.persistence,
+        stop_condition: rule.stop_condition,
       });
     }
   }
@@ -121,6 +134,9 @@ async function hasActiveTimer() {
 }
 
 async function checkSilence() {
+  autoExpire();
+  if (!isInterruptible()) return;
+
   const now = dayjs();
   const hour = now.hour();
   if (hour < 8 || hour >= 23) return;
@@ -137,10 +153,7 @@ async function checkSilence() {
   if (lastSilenceCheckAt && now.diff(dayjs(lastSilenceCheckAt), "minute") < SILENCE_CHECK_COOLDOWN_MIN) return;
   lastSilenceCheckAt = now.toISOString();
 
-  const state = isInterruptible();
-  const prompt = state
-    ? `用户已经 ${silentMin} 分钟没有消息。请用一句话问用户在干嘛，根据回答调用 log_timeline 记录当前活动，并根据活动类型调用 set_interruptibility（work/meeting→dnd_until_user_confirms，rest/entertainment→open）。`
-    : `用户已经 ${silentMin} 分钟没有消息，且当前处于免打扰状态。请问用户"还在忙吗？"，如果用户说结束了，调用 set_interruptibility(open)；如果还在忙，不做任何操作。`;
+  const prompt = `用户已经 ${silentMin} 分钟没有消息。请用一句话问用户在忙什么；用户回答后只调用 log_timeline 记录当前活动。不要根据 activity_type 自动设置免打扰，不要追问结束时间；只有用户明确要求免打扰、计时或提醒时，才调用 set_interruptibility 或 create_reminder。`;
 
   if (onReminderFired) {
     onReminderFired({ id: "silence-check", type: "silence_check", message: prompt });

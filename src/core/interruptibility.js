@@ -51,11 +51,6 @@ export function autoExpire() {
   return state;
 }
 
-// No hardcoded mapping — agent decides based on user-defined rules.
-export function inferFromActivity(_activityType) {
-  return getState();
-}
-
 export function isInterruptible() {
   return getState().status === "open";
 }

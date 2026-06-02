@@ -142,7 +142,8 @@ listItems / getItem / createItem / updateItem / deleteItem
 4. 90 分钟内不重复推送（`lastDeferrableNudge` 冷却）
 
 **提醒路由（`src/index.js`）：**
-- `task_checkin` / `user_rule` / `project_nudge`：路由给 Agent 处理（需要 LLM 生成追问）
+- `user_rule`：入口代码直接展示规则原文；持续规则只登记等待确认，不经过 LLM 改写
+- `task_checkin` / `project_nudge` / `silence_check`：路由给 Agent 处理
 - 其他类型：直接展示文本
 
 ---
@@ -157,12 +158,12 @@ listItems / getItem / createItem / updateItem / deleteItem
 | `dnd_until_time` | 到指定时间恢复 | 跳过，`autoExpire()` 到期自动重置 |
 | `dnd_until_user_confirms` | 等用户主动说恢复 | 跳过，直到用户调用 `set_interruptibility(open)` |
 
-**状态来源：** 完全由用户声明（`set_interruptibility` 工具）或 Agent 根据用户规则判断，不再硬编码 activity_type 映射。
+**状态来源：** 完全由用户明确声明（`set_interruptibility` 工具），不再硬编码 activity_type 映射。
 
 **活动类型规则（用户自定义）：**
-- 首次遇到某类活动时，Agent 询问用户是否设 dnd
-- 用户选择后存为 `trigger_condition="activity:[类型]"` 的 user_rule
-- 后续同类活动直接按规则执行，不再询问
+- 只有用户明确要求长期偏好时，才存为 `trigger_condition="activity:[类型]"` 的 user_rule
+- 不因首次遇到某类活动自动追问是否设 dnd
+- 后续同类活动可按规则执行，但普通状态汇报不触发追问
 - "工作/上班"等泛化状态不触发 dnd（工作是容器状态，不是具体专注事件）
 
 **持久化：** `data/interruptibility.json`（本地 JSON，进程间共享状态）
@@ -203,7 +204,7 @@ listItems / getItem / createItem / updateItem / deleteItem
 **触发条件格式：**
 - `daily:HH:mm` — 每天指定时间
 - `weekly:mon,wed,fri:HH:mm` — 每周指定日期
-- `activity:[类型]` — 记录某类 timeline 时（Agent 手动查询，非调度器触发）
+- `activity:[类型]` — 用户明确要求的长期活动偏好（Agent 手动查询，非调度器触发）
 
 **触发逻辑（每分钟评估）：**
 - 今天未触发 + 时间已过 → 触发

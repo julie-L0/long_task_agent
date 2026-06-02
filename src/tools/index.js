@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "fs";
 import dayjs from "dayjs";
 import { config } from "../core/config.js";
 import * as storage from "../storage/index.js";
-import { getState, setState, inferFromActivity } from "../core/interruptibility.js";
+import { getState, setState } from "../core/interruptibility.js";
 
 export const toolDefinitions = [
   {
@@ -96,13 +96,13 @@ export const toolDefinitions = [
     type: "function",
     function: {
       name: "create_reminder",
-      description: "创建定时提醒",
+      description: "创建定时提醒。不要用它创建用户规则；每天/每周/以后持续生效的规则必须使用 create_user_rule。",
       parameters: {
         type: "object",
         properties: {
           task_id: { type: "string", description: "关联任务 ID（可选）" },
           trigger_at: { type: "string", description: "触发时间 ISO8601" },
-          type: { type: "string", enum: ["task_start", "task_checkin", "task_deadline", "project_nudge", "user_rule"] },
+          type: { type: "string", enum: ["task_start", "task_checkin", "task_deadline", "project_nudge"] },
           message: { type: "string", description: "提醒内容" },
           repeat_until_confirmed: { type: "boolean" },
         },
@@ -140,7 +140,7 @@ export const toolDefinitions = [
     type: "function",
     function: {
       name: "log_timeline",
-      description: "记录时间线事件。会根据 activity_type 自动更新可打扰状态（用户手动设置的状态不会被覆盖）。",
+      description: "记录时间线事件。用户只是汇报当前状态时可以用它记录，但不要因此自动创建 check-in 提醒或追问结束时间；只有用户明确要求计时/提醒时才配合 create_reminder。",
       parameters: {
         type: "object",
         properties: {
@@ -185,7 +185,7 @@ export const toolDefinitions = [
     type: "function",
     function: {
       name: "set_interruptibility",
-      description: "设置当前可打扰状态。用户说'不要打扰/开会了/专注中'时调用，必须同时追问恢复方式后再写入。用户说'好了/可以了/回来了'时用 status=open 调用。",
+      description: "设置当前可打扰状态。只有用户明确说不要打扰/别烦我，或给出明确勿扰时间窗口时调用；单纯说'我在做X'只是状态汇报，不要因此追问恢复方式。用户说'好了/可以了/回来了'时用 status=open 调用。",
       parameters: {
         type: "object",
         properties: {
@@ -296,7 +296,7 @@ export const toolDefinitions = [
     type: "function",
     function: {
       name: "create_user_rule",
-      description: "创建用户自定义规则。调用前必须先调用 list_user_rules 检查：1) 是否有相同 trigger_condition 的规则（冲突则询问替换还是新建）；2) 是否有相同 activity 类型但矛盾的规则；3) 活跃规则总数是否已达 10 条（达到则提示用户先整理）。trigger_condition 格式：'daily:HH:mm' 或 'weekly:mon,wed,fri:HH:mm' 或 'activity:[类型]'。",
+      description: "创建用户自定义规则。调用前必须先调用 list_user_rules 检查：1) 是否有相同 trigger_condition 的规则（冲突则询问替换还是新建）；2) 活跃规则总数是否已达 10 条（达到则提示用户先整理）。trigger_condition 格式：'daily:HH:mm' 或 'weekly:mon,wed,fri:HH:mm'；只有用户明确要求长期活动偏好时才用 'activity:[类型]'，不要因首次遇到某活动就追问。",
       parameters: {
         type: "object",
         properties: {
@@ -491,7 +491,7 @@ export async function executeTool(name, args) {
         : { error: `Task ${args.id} not found` };
 
     case "create_reminder": {
-      const reminderType = args.type || "task_start";
+      const reminderType = args.type === "user_rule" ? "task_start" : (args.type || "task_start");
       let taskId = args.task_id || null;
 
       if (!taskId && ["task_start", "task_deadline"].includes(reminderType)) {
@@ -556,8 +556,6 @@ export async function executeTool(name, args) {
         interruption_reason: null,
         source: args.source || "ai_inferred",
       };
-      // Infer interruptibility from activity unless user has manually set DND
-      inferFromActivity(args.activity_type);
       return await storage.createItem("timeline", event);
     }
 
@@ -783,7 +781,7 @@ export async function executeTool(name, args) {
 
       if (args.rule_ids) {
         for (const rid of args.rule_ids.split(",").map((s) => s.trim())) {
-          const r = await storage.updateItem("user_rules", rid, { status: "inactive" });
+          const r = await storage.updateItem("user_rules", rid, { status: "paused" });
           if (r) results.push(`规则「${r.name}」已停用`);
         }
       }
@@ -831,7 +829,12 @@ export async function executeTool(name, args) {
       const result = await storage.updateItem("user_rules", args.id, {
         confirmed_at: new Date().toISOString(),
       });
-      return result || { error: `Rule ${args.id} not found` };
+      if (!result) return { error: `Rule ${args.id} not found` };
+      return {
+        ...result,
+        confirmed_today: true,
+        note: "规则保持 active 是正常的；confirmed_at 用于停止今天的重复提醒，明天仍会按规则再次生效。",
+      };
     }
 
     // --- File ops ---

@@ -39,8 +39,7 @@ async function loadActiveContext() {
   if (activeRules.filter((r) => r.trigger_condition !== "persona").length) {
     contextBlock += "\n### 活跃用户规则\n";
     for (const r of activeRules.filter((r) => r.trigger_condition !== "persona")) {
-      const today = dayjs().format("YYYY-MM-DD");
-      const confirmedToday = r.confirmed_at && r.confirmed_at.startsWith(today);
+      const confirmedToday = r.confirmed_at && dayjs(r.confirmed_at).isSame(dayjs(), "day");
       const tag = confirmedToday ? "✓已确认" : r.persistence ? "持续中" : "单次";
       contextBlock += `- [${tag}] 「${r.name}」${r.trigger_condition} | ${r.message.slice(0, 30)}${r.message.length > 30 ? "…" : ""}\n`;
     }
