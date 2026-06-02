@@ -78,10 +78,10 @@ function sortByDate(a, b) {
 
 export async function buildDashboard() {
   const [tasks, projects, reminders, rawTimeline] = await Promise.all([
-    storage.listItems("tasks").catch(() => []),
-    storage.listItems("projects").catch(() => []),
-    storage.listItems("reminders").catch(() => []),
-    storage.listItems("timeline").catch(() => []),
+    storage.listItems("tasks"),
+    storage.listItems("projects"),
+    storage.listItems("reminders"),
+    storage.listItems("timeline"),
   ]);
   const timeline = await normalizeOpenTimelineEvents(rawTimeline).catch(() => rawTimeline);
   const now = dayjs();

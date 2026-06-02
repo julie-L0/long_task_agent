@@ -190,7 +190,11 @@ const MAX_TOOL_ROUNDS = 12;
 
 export async function runAgent(userMessage, conversationHistory = []) {
   if (isDashboardRequest(userMessage)) {
-    return { reply: await buildDashboard(), messages: [], shouldResetContext: false };
+    try {
+      return { reply: await buildDashboard(), messages: [], shouldResetContext: false };
+    } catch (err) {
+      return { reply: `飞书存储暂时连不上，面板数据这次没读出来：${err.message}`, messages: [], shouldResetContext: false };
+    }
   }
 
   const systemPrompt = await loadSystemPrompt();
