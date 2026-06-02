@@ -10,6 +10,7 @@ import { createCLI } from "./channel/cli.js";
 import { createWeixinChannel } from "./channel/weixin.js";
 import * as storage from "./storage/index.js";
 import { setState } from "./core/interruptibility.js";
+import { normalizeOpenTimelineEvents } from "./core/timeline.js";
 
 // Only allow running as a direct script, not via node -e or --input-type
 if (!process.argv[1]?.endsWith("index.js")) {
@@ -269,6 +270,7 @@ console.log(`${"═".repeat(40)}`);
 
 setReminderHandler(handleReminder);
 setSilenceDetectionSource(getLastMessageAt, getSilenceThresholdMin);
+await normalizeOpenTimelineEvents().catch((err) => console.error("[timeline] normalize failed:", err.message));
 
 if (CHANNEL === "weixin") {
   channel = createWeixinChannel({ onMessage: handleMessage });

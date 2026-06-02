@@ -6,6 +6,12 @@ import { chatCompletion } from "../llm/provider.js";
 import { toolDefinitions, executeTool } from "../tools/index.js";
 import * as storage from "../storage/index.js";
 import { getState } from "./interruptibility.js";
+import { buildDashboard } from "./dashboard.js";
+import { normalizeOpenTimelineEvents, OPEN_TIMELINE_MAX_MIN } from "./timeline.js";
+
+function isDashboardRequest(message) {
+  return /^(面板|状态|dashboard|看看今天|今天怎么样|今日待办|今天有什么|本周待办|这周有什么)\s*$/i.test(message.trim());
+}
 
 async function loadActiveContext() {
   const collections = ["tasks", "projects", "reminders", "timeline", "user_rules", "progress_logs"];
@@ -16,13 +22,14 @@ async function loadActiveContext() {
 
   const cutoff = dayjs().subtract(30, "day").toISOString();
   const progressLogs = allProgressLogs.filter((l) => l.logged_at >= cutoff);
+  const normalizedTimeline = await normalizeOpenTimelineEvents(allTimeline).catch(() => allTimeline);
 
   const tasks = allTasks.filter((t) => ["pending", "in_progress", "paused"].includes(t.status));
   const todayCompleted = allTasks.filter((t) => {
     if (t.status !== "completed") return false;
     return dayjs(t.updated_at).isAfter(dayjs().startOf("day"));
   });
-  const openEvent = allTimeline
+  const openEvent = normalizedTimeline
     .filter((e) => !e.end_time)
     .sort((a, b) => new Date(b.start_time) - new Date(a.start_time))[0] || null;
   const activeProjects = projects.filter((p) => ["active", "paused"].includes(p.status));
@@ -94,12 +101,48 @@ async function loadActiveContext() {
     }
   }
 
+  contextBlock += "\n### 面板候选项（输出面板时必须覆盖）\n";
+  const now = dayjs();
+  const startOfWeek = now.startOf("day").subtract((now.day() || 7) - 1, "day");
+  const endOfWeek = startOfWeek.add(6, "day").endOf("day");
+  const taskDate = (t) => t.start_time || t.hard_deadline || t.flexible_deadline || null;
+  const activeTasks = allTasks.filter((t) => ["pending", "in_progress"].includes(t.status));
+  const todayDashboard = [];
+  const weekDashboard = [];
+
+  if (openEvent) {
+    const elapsed = Math.min(Math.max(dayjs().diff(dayjs(openEvent.start_time), "minute"), 0), OPEN_TIMELINE_MAX_MIN);
+    todayDashboard.push(`▶ ${dayjs(openEvent.start_time).format("HH:mm")} ${openEvent.current_active_task || openEvent.activity_type}（进行中 ${elapsed}min）`);
+  }
+
+  for (const t of activeTasks) {
+    const date = taskDate(t);
+    if (t.status === "in_progress" || (date && dayjs(date).isSame(now, "day"))) {
+      todayDashboard.push(`任务 ${date ? dayjs(date).format("HH:mm") : "--:--"} ${t.title} id:${t.id}`);
+    } else if (date && dayjs(date).isAfter(startOfWeek) && dayjs(date).isBefore(endOfWeek) && !dayjs(date).isSame(now, "day")) {
+      weekDashboard.push(`任务 ${dayjs(date).format("MM-DD HH:mm")} ${t.title} id:${t.id}`);
+    }
+  }
+
+  for (const r of pendingReminders) {
+    if (!r.trigger_at) continue;
+    const triggerAt = dayjs(r.trigger_at);
+    if (triggerAt.isSame(now, "day")) {
+      todayDashboard.push(`提醒 ${triggerAt.format("HH:mm")} ${r.message} id:${r.id}${r.task_id ? ` task_id:${r.task_id}` : ""}`);
+    } else if (triggerAt.isAfter(startOfWeek) && triggerAt.isBefore(endOfWeek)) {
+      weekDashboard.push(`提醒 ${triggerAt.format("MM-DD HH:mm")} ${r.message} id:${r.id}${r.task_id ? ` task_id:${r.task_id}` : ""}`);
+    }
+  }
+
+  contextBlock += todayDashboard.length ? `- 今日：${todayDashboard.join("；")}\n` : "- 今日：无\n";
+  contextBlock += weekDashboard.length ? `- 本周：${weekDashboard.join("；")}\n` : "- 本周：无\n";
+
   if (!activeProjects.length && !tasks.length && !pendingReminders.length) {
     contextBlock += "\n（当前无活跃项目、任务或提醒）\n";
   }
 
   if (openEvent) {
-    const elapsed = dayjs().diff(dayjs(openEvent.start_time), "minute");
+    const elapsed = Math.min(Math.max(dayjs().diff(dayjs(openEvent.start_time), "minute"), 0), OPEN_TIMELINE_MAX_MIN);
     contextBlock += "\n### 进行中的计时事件\n";
     contextBlock += `- [${openEvent.activity_type}] ${openEvent.current_active_task || "未命名"} | 已进行 ${elapsed} 分钟 | 开始于 ${dayjs(openEvent.start_time).format("HH:mm")} | id:${openEvent.id}`;
     if (openEvent.expected_next_action) {
@@ -146,6 +189,10 @@ async function loadSystemPrompt() {
 const MAX_TOOL_ROUNDS = 12;
 
 export async function runAgent(userMessage, conversationHistory = []) {
+  if (isDashboardRequest(userMessage)) {
+    return { reply: await buildDashboard(), messages: [], shouldResetContext: false };
+  }
+
   const systemPrompt = await loadSystemPrompt();
   const messages = [
     { role: "system", content: systemPrompt },

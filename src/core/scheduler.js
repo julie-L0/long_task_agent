@@ -2,6 +2,7 @@ import cron from "node-cron";
 import dayjs from "dayjs";
 import * as storage from "../storage/index.js";
 import { isInterruptible, autoExpire } from "./interruptibility.js";
+import { normalizeOpenTimelineEvents } from "./timeline.js";
 
 let onReminderFired = null;
 let getLastMessageAt = () => null;
@@ -129,8 +130,8 @@ let lastSilenceCheckAt = null;
 const SILENCE_CHECK_COOLDOWN_MIN = 30;
 
 async function hasActiveTimer() {
-  const timeline = await storage.listItems("timeline");
-  return timeline.some((e) => !e.end_time && e.activity_type);
+  const timeline = await normalizeOpenTimelineEvents(await storage.listItems("timeline"));
+  return timeline.some((e) => !e.end_time && e.related_task_id);
 }
 
 async function checkSilence() {
@@ -167,7 +168,7 @@ async function checkExpectedNextAction() {
   const hour = now.hour();
   if (hour < 8 || hour >= 23) return;
 
-  const all = await storage.listItems("timeline");
+  const all = await normalizeOpenTimelineEvents(await storage.listItems("timeline"));
   const openWithNext = all.filter(
     (e) => !e.end_time && e.expected_next_action && !e.next_action_notified
   );

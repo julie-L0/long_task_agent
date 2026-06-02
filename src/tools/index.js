@@ -4,6 +4,7 @@ import dayjs from "dayjs";
 import { config } from "../core/config.js";
 import * as storage from "../storage/index.js";
 import { getState, setState } from "../core/interruptibility.js";
+import { closeOpenTimelineBefore } from "../core/timeline.js";
 
 export const toolDefinitions = [
   {
@@ -556,6 +557,8 @@ export async function executeTool(name, args) {
         interruption_reason: null,
         source: args.source || "ai_inferred",
       };
+      const existing = await closeOpenTimelineBefore(event);
+      if (existing) return { ...existing, deduped_open_timeline: true };
       return await storage.createItem("timeline", event);
     }
 

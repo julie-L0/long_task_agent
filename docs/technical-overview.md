@@ -83,7 +83,8 @@
 - 活跃项目（含进度、最近 3 条 progress_log、每日配额 `今日 X/Y`）
 - 今日到期提醒
 - 活跃用户规则
-- 未关闭的 timeline 事件（含 `expected_next_action`）
+- 面板候选项：今日/本周任务、pending reminders、当前未关闭 timeline 事件
+- 未关闭的 timeline 事件（含 `expected_next_action`，超过 4 小时自动归档）
 - 新用户检测：tasks + projects + rules 全空时注入 `templates/onboarding.md`
 
 **当前模型：** MiniMax-M2.7，base_url `https://api.minimax.chat/v1`，可通过 `.env` 切换任意 OpenAI 兼容 API。
@@ -134,6 +135,8 @@ listItems / getItem / createItem / updateItem / deleteItem
 | `checkStaleProjects` | 每小时整点 | 检测 24h 未推进项目，8-23 时段 + interruptible 双重过滤 |
 | `checkExpectedNextAction` | 每小时整点 | 检测有 expected_next_action 且超时的 timeline 事件 |
 | `checkStreakBreaks` | 每天 00:01 | 重置昨日未完成配额的 daily_done，streak 断裂处理 |
+
+普通状态汇报写入 timeline 时会自动关闭上一条未结束状态；只有带 `related_task_id` 的 fixed_duration timeline 才会被视为真正计时并阻塞调度。
 
 **见缝插针逻辑（`checkDeferrableOpportunity`）：**
 1. 读取 `interruptibility` 状态，若非 `open` 则跳过
