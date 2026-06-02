@@ -3,6 +3,7 @@ import dayjs from "dayjs";
 import * as storage from "../storage/index.js";
 import { isInterruptible, autoExpire } from "./interruptibility.js";
 import { normalizeOpenTimelineEvents } from "./timeline.js";
+import { shouldTriggerUserRule } from "./rules.js";
 
 let onReminderFired = null;
 let getLastMessageAt = () => null;
@@ -47,56 +48,6 @@ function priorityScore(task) {
   return u * 3 + i; // urgency slightly weighted higher
 }
 
-// Parse "daily:HH:mm" or "weekly:mon,wed,fri:HH:mm"
-function shouldTriggerRule(rule, now) {
-  const today = now.format("YYYY-MM-DD");
-  const dayNames = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
-  const todayName = dayNames[now.day()];
-
-  const parts = rule.trigger_condition.split(":");
-  const type = parts[0]; // "daily" or "weekly"
-
-  let triggerTime; // "HH:mm"
-  if (type === "daily") {
-    triggerTime = parts.slice(1).join(":"); // e.g. "23:00"
-  } else if (type === "weekly") {
-    if (!parts[1]) {
-      console.warn(`[scheduler] invalid user rule trigger_condition: ${rule.trigger_condition} (${rule.id})`);
-      return false;
-    }
-    const days = parts[1].split(","); // e.g. ["mon","wed","fri"]
-    if (!days.includes(todayName)) return false;
-    triggerTime = parts.slice(2).join(":"); // e.g. "09:00"
-  } else {
-    return false;
-  }
-
-  const [hh, mm] = triggerTime.split(":").map(Number);
-  if (!/^\d{1,2}:\d{2}$/.test(triggerTime) || hh < 0 || hh > 23 || mm < 0 || mm > 59) {
-    console.warn(`[scheduler] invalid user rule trigger_condition: ${rule.trigger_condition} (${rule.id})`);
-    return false;
-  }
-  const triggerMoment = now.startOf("day").add(hh, "hour").add(mm || 0, "minute");
-  if (now.isBefore(triggerMoment)) return false; // time hasn't come yet
-
-  if (rule.persistence && rule.stop_condition === "user_confirms") {
-    const confirmedToday = rule.confirmed_at && dayjs(rule.confirmed_at).isSame(now, "day");
-    if (confirmedToday) return false;
-  }
-
-  // New day: hasn't triggered today
-  if (rule.last_triggered_date !== today) return true;
-
-  // Same day + persistence: repeat if interval passed and not confirmed today
-  if (rule.persistence && rule.stop_condition === "user_confirms") {
-    const lastFired = rule.last_fired_at ? dayjs(rule.last_fired_at) : null;
-    if (!lastFired) return true;
-    return now.diff(lastFired, "minute") >= (rule.repeat_interval_min ?? 15);
-  }
-
-  return false; // once type, already triggered today
-}
-
 async function checkUserRules() {
   autoExpire();
   if (!isInterruptible()) return;
@@ -106,7 +57,7 @@ async function checkUserRules() {
   const rules = (await storage.listItems("user_rules")).filter((r) => r.status === "active" && r.trigger_condition !== "persona");
 
   for (const rule of rules) {
-    if (!shouldTriggerRule(rule, now)) continue;
+    if (!shouldTriggerUserRule(rule, now)) continue;
 
     await storage.updateItem("user_rules", rule.id, {
       last_triggered_date: today,

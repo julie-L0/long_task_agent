@@ -8,16 +8,67 @@ import * as storage from "../storage/index.js";
 import { getState } from "./interruptibility.js";
 import { buildDashboard } from "./dashboard.js";
 import { normalizeOpenTimelineEvents, OPEN_TIMELINE_MAX_MIN } from "./timeline.js";
+import { ruleOccurrencesInRange } from "./rules.js";
 
 function isDashboardRequest(message) {
   return /^(面板|状态|dashboard|看看今天|今天怎么样|今日待办|今天有什么|本周待办|这周有什么)\s*$/i.test(message.trim());
 }
 
+function claimsWriteSuccess(reply) {
+  return /✅|已记录|已修正|已写入|已取消|已归档|已完成|记下了|设好了|改好了/.test(reply);
+}
+
+const RECENT_WRITE_TTL_MS = 6 * 60 * 60 * 1000;
+const recentWrites = [];
+
+function cleanupRecentWrites() {
+  const cutoff = Date.now() - RECENT_WRITE_TTL_MS;
+  while (recentWrites.length && recentWrites[0].at < cutoff) {
+    recentWrites.shift();
+  }
+}
+
+function titleOf(result) {
+  return result.title || result.message || result.name || result.current_active_task || result.id || "未命名";
+}
+
+function summarizeWrite(toolName, result) {
+  if (!result || typeof result !== "object" || result.error) return null;
+  if (toolName === "archive_confirmed") {
+    return Array.isArray(result.archived) && result.archived.length
+      ? `archive_confirmed: ${result.archived.join("；")}`
+      : null;
+  }
+
+  const parts = [toolName, titleOf(result)];
+  if (result.id) parts.push(`id:${result.id}`);
+  if (result.status) parts.push(`status:${result.status}`);
+  if (result.trigger_at) parts.push(`trigger:${dayjs(result.trigger_at).format("MM-DD HH:mm")}`);
+  if (result.start_time) parts.push(`start:${dayjs(result.start_time).format("MM-DD HH:mm")}`);
+  if (result.hard_deadline) parts.push(`deadline:${dayjs(result.hard_deadline).format("MM-DD HH:mm")}`);
+  if (result.trigger_condition) parts.push(`rule:${result.trigger_condition}`);
+  if (result.task_id) parts.push(`task_id:${result.task_id}`);
+  return parts.join(" | ");
+}
+
+function recordRecentWrite(toolName, result) {
+  const summary = summarizeWrite(toolName, result);
+  if (!summary) return;
+  recentWrites.push({ at: Date.now(), summary });
+  cleanupRecentWrites();
+  while (recentWrites.length > 30) recentWrites.shift();
+}
+
 async function loadActiveContext() {
   const collections = ["tasks", "projects", "reminders", "timeline", "user_rules", "progress_logs"];
-  const results = await Promise.all(
-    collections.map((c) => storage.listItems(c).catch((e) => { console.error(`[agent] failed to load ${c}:`, e.message); return []; }))
-  );
+  const results = await Promise.all(collections.map(async (collection) => {
+    try {
+      return await storage.listItems(collection);
+    } catch (e) {
+      e.message = `读取 ${collection} 失败：${e.message}`;
+      throw e;
+    }
+  }));
   const [allTasks, projects, reminders, allTimeline, rules, allProgressLogs] = results;
 
   const cutoff = dayjs().subtract(30, "day").toISOString();
@@ -37,6 +88,13 @@ async function loadActiveContext() {
   const activeRules = rules.filter((r) => r.status === "active");
 
   let contextBlock = "\n\n## 当前活跃状态（从 source 加载，每轮刷新）\n";
+  cleanupRecentWrites();
+  if (recentWrites.length) {
+    contextBlock += "\n### 最近写入缓存（用于飞书读取延迟兜底）\n";
+    for (const item of recentWrites.slice(-12)) {
+      contextBlock += `- ${dayjs(item.at).format("HH:mm")} ${item.summary}\n`;
+    }
+  }
 
   const personaRule = activeRules.find((r) => r.trigger_condition === "persona");
   if (personaRule) {
@@ -124,13 +182,27 @@ async function loadActiveContext() {
     }
   }
 
-  for (const r of pendingReminders) {
+  const activeTaskIds = new Set(activeTasks.map((t) => t.id));
+  for (const r of pendingReminders.filter((r) => !r.task_id || !activeTaskIds.has(r.task_id))) {
     if (!r.trigger_at) continue;
     const triggerAt = dayjs(r.trigger_at);
     if (triggerAt.isSame(now, "day")) {
       todayDashboard.push(`提醒 ${triggerAt.format("HH:mm")} ${r.message} id:${r.id}${r.task_id ? ` task_id:${r.task_id}` : ""}`);
     } else if (triggerAt.isAfter(startOfWeek) && triggerAt.isBefore(endOfWeek)) {
       weekDashboard.push(`提醒 ${triggerAt.format("MM-DD HH:mm")} ${r.message} id:${r.id}${r.task_id ? ` task_id:${r.task_id}` : ""}`);
+    }
+  }
+
+  const ruleOccurrences = activeRules
+    .flatMap((rule) => ruleOccurrencesInRange(rule, startOfWeek, endOfWeek, now))
+    .sort((a, b) => new Date(a.trigger_at) - new Date(b.trigger_at));
+  for (const occurrence of ruleOccurrences) {
+    const triggerAt = dayjs(occurrence.trigger_at);
+    const line = `规则提醒 ${triggerAt.format("MM-DD HH:mm")} ${occurrence.rule.message} id:${occurrence.rule.id}`;
+    if (triggerAt.isSame(now, "day")) {
+      todayDashboard.push(line);
+    } else {
+      weekDashboard.push(line);
     }
   }
 
@@ -197,7 +269,16 @@ export async function runAgent(userMessage, conversationHistory = []) {
     }
   }
 
-  const systemPrompt = await loadSystemPrompt();
+  let systemPrompt;
+  try {
+    systemPrompt = await loadSystemPrompt();
+  } catch (err) {
+    return {
+      reply: `飞书存储暂时连不上，这次不能安全读写记忆：${err.message}`,
+      messages: [],
+      shouldResetContext: false,
+    };
+  }
   const messages = [
     { role: "system", content: systemPrompt },
     ...conversationHistory,
@@ -206,8 +287,9 @@ export async function runAgent(userMessage, conversationHistory = []) {
 
   let round = 0;
   let shouldResetContext = false;
-  const WRITE_TOOLS = new Set(["create_task", "create_reminder", "create_project", "update_task", "update_project_progress", "create_user_rule", "log_timeline", "set_interruptibility"]);
+  const WRITE_TOOLS = new Set(["create_task", "create_reminder", "create_project", "update_task", "update_project_progress", "create_user_rule", "update_user_rule", "confirm_user_rule", "log_timeline", "update_timeline", "set_interruptibility", "archive_confirmed", "cancel_reminder"]);
   let hasWritten = false;
+  let writeFailed = false;
 
   while (round < MAX_TOOL_ROUNDS) {
     round++;
@@ -215,10 +297,15 @@ export async function runAgent(userMessage, conversationHistory = []) {
 
     if (!response.tool_calls?.length) {
       const reply = response.content || "";
-      // Guard: if reply says ✅ 已记录 but no write tool was called, force a correction round
-      if (reply.includes("✅") && !hasWritten && round < MAX_TOOL_ROUNDS) {
+      if (claimsWriteSuccess(reply) && writeFailed && round < MAX_TOOL_ROUNDS) {
         messages.push(response);
-        messages.push({ role: "user", content: "[系统校验] 你回复了 ✅ 已记录，但本轮没有调用任何写入工具。请立刻调用对应工具完成写入，或者去掉 ✅ 重新回复。" });
+        messages.push({ role: "user", content: "[系统校验] 本轮有写入工具失败或返回 error，不能回复已记录/已修正/已取消/已完成等成功措辞。请如实告诉用户这次没有写成功，并说明需要稍后重试。" });
+        continue;
+      }
+      // Guard: if reply says ✅ 已记录 but no write tool was called, force a correction round
+      if (claimsWriteSuccess(reply) && !hasWritten && round < MAX_TOOL_ROUNDS) {
+        messages.push(response);
+        messages.push({ role: "user", content: "[系统校验] 你回复了已记录/已修正等成功措辞，但本轮没有调用任何写入工具。请立刻调用对应工具完成写入，或者去掉成功措辞重新回复。" });
         continue;
       }
       return {
@@ -237,9 +324,21 @@ export async function runAgent(userMessage, conversationHistory = []) {
       } catch {
         args = {};
       }
-      const result = await executeTool(toolCall.function.name, args);
+      let result;
+      try {
+        result = await executeTool(toolCall.function.name, args);
+      } catch (err) {
+        result = { error: err.message };
+      }
 
-      if (WRITE_TOOLS.has(toolCall.function.name)) hasWritten = true;
+      if (WRITE_TOOLS.has(toolCall.function.name)) {
+        if (result && typeof result === "object" && result.error) {
+          writeFailed = true;
+        } else {
+          hasWritten = true;
+          recordRecentWrite(toolCall.function.name, result);
+        }
+      }
       if (toolCall.function.name === "archive_confirmed") {
         shouldResetContext = true;
       }

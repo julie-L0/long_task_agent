@@ -297,7 +297,7 @@ export const toolDefinitions = [
     type: "function",
     function: {
       name: "create_user_rule",
-      description: "创建用户自定义规则。调用前必须先调用 list_user_rules 检查：1) 是否有相同 trigger_condition 的规则（冲突则询问替换还是新建）；2) 活跃规则总数是否已达 10 条（达到则提示用户先整理）。trigger_condition 格式：'daily:HH:mm' 或 'weekly:mon,wed,fri:HH:mm'；只有用户明确要求长期活动偏好时才用 'activity:[类型]'，不要因首次遇到某活动就追问。",
+      description: "创建用户自定义时间规则。调用前必须先调用 list_user_rules 检查：1) 是否有相同 trigger_condition 的规则（冲突则询问替换还是新建）；2) 活跃规则总数是否已达 10 条（达到则提示用户先整理）。trigger_condition 只支持 'daily:HH:mm'、'weekly:mon,wed,fri:HH:mm' 或 persona；单次提醒必须用 create_task + create_reminder。",
       parameters: {
         type: "object",
         properties: {
@@ -492,6 +492,9 @@ export async function executeTool(name, args) {
         : { error: `Task ${args.id} not found` };
 
     case "create_reminder": {
+      if (!args.trigger_at || !dayjs(args.trigger_at).isValid()) {
+        return { error: "create_reminder 需要有效的 trigger_at ISO 时间" };
+      }
       const reminderType = args.type === "user_rule" ? "task_start" : (args.type || "task_start");
       let taskId = args.task_id || null;
 
@@ -771,7 +774,15 @@ export async function executeTool(name, args) {
       if (args.task_ids) {
         for (const tid of args.task_ids.split(",").map((s) => s.trim())) {
           const t = await storage.updateItem("tasks", tid, { status: "completed" });
-          if (t) results.push(`任务「${t.title}」已完成归档`);
+          if (t) {
+            const reminders = (await storage.listItems("reminders")).filter(
+              (r) => r.status === "pending" && r.task_id === t.id
+            );
+            for (const r of reminders) {
+              await storage.updateItem("reminders", r.id, { status: "dismissed" });
+            }
+            results.push(`任务「${t.title}」已完成归档`);
+          }
         }
       }
 
@@ -794,6 +805,16 @@ export async function executeTool(name, args) {
 
     // --- User Rule ---
     case "create_user_rule": {
+      if (!/^(daily:\d{1,2}:\d{2}|weekly:[a-z,]+:\d{1,2}:\d{2}|persona)$/.test(args.trigger_condition || "")) {
+        return { error: "create_user_rule 只接受 daily/weekly/persona。单次提醒必须用 create_task + create_reminder。" };
+      }
+      const ruleText = `${args.name || ""} ${args.message || ""}`;
+      if (/^weekly:/.test(args.trigger_condition) && !/每周|每星期|每个周|weekly/i.test(ruleText)) {
+        return { error: "weekly 规则必须来自用户明确说“每周/每星期”。只说“周五提醒”是单次提醒，请用 create_task + create_reminder。" };
+      }
+      if (/^daily:/.test(args.trigger_condition) && !/每天|每日|每晚|每早|每天早|每天晚|daily/i.test(ruleText)) {
+        return { error: "daily 规则必须来自用户明确说“每天/每日”。只说“今晚/明早提醒”是单次提醒，请用 create_task + create_reminder。" };
+      }
       // "每天/每周" only describes schedule recurrence. Persistence means repeating
       // after the scheduled time until the user confirms, and requires explicit intent.
       let persistence = args.persistence ?? false;

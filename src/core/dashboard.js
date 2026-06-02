@@ -1,6 +1,7 @@
 import dayjs from "dayjs";
 import * as storage from "../storage/index.js";
 import { normalizeOpenTimelineEvents, OPEN_TIMELINE_MAX_MIN } from "./timeline.js";
+import { ruleOccurrencesInRange } from "./rules.js";
 
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
@@ -65,6 +66,16 @@ function reminderLine(reminder, withDate = false) {
   return parts.join(" ");
 }
 
+function ruleLine(occurrence, withDate = false) {
+  const parts = [];
+  if (withDate) parts.push(dayLabel(occurrence.trigger_at));
+  parts.push("⏰");
+  const t = timeLabel(occurrence.trigger_at);
+  if (t) parts.push(t);
+  parts.push(occurrence.rule.message || occurrence.rule.name);
+  return parts.join(" ");
+}
+
 function eventLine(event) {
   const startedAt = dayjs(event.start_time);
   const elapsed = Math.max(0, Math.min(dayjs().diff(startedAt, "minute"), OPEN_TIMELINE_MAX_MIN));
@@ -77,11 +88,12 @@ function sortByDate(a, b) {
 }
 
 export async function buildDashboard() {
-  const [tasks, projects, reminders, rawTimeline] = await Promise.all([
+  const [tasks, projects, reminders, rawTimeline, rules] = await Promise.all([
     storage.listItems("tasks"),
     storage.listItems("projects"),
     storage.listItems("reminders"),
     storage.listItems("timeline"),
+    storage.listItems("user_rules"),
   ]);
   const timeline = await normalizeOpenTimelineEvents(rawTimeline).catch(() => rawTimeline);
   const now = dayjs();
@@ -89,6 +101,8 @@ export async function buildDashboard() {
   const todayItems = [];
   const weekItems = [];
   const activeTaskStatuses = new Set(["pending", "in_progress"]);
+  const weekStart = startOfWeek(now);
+  const weekEnd = weekStart.add(6, "day").endOf("day");
 
   for (const event of timeline.filter((e) => e.start_time && !e.end_time)) {
     if (isToday(event.start_time, now)) {
@@ -99,20 +113,27 @@ export async function buildDashboard() {
   for (const task of tasks) {
     const date = taskDate(task);
     const active = activeTaskStatuses.has(task.status);
-    if ((active && (isToday(date, now) || task.status === "in_progress")) || (task.status === "completed" && isToday(task.updated_at, now))) {
+    if (active && (isToday(date, now) || task.status === "in_progress")) {
       todayItems.push({ date: date || task.updated_at || now.toISOString(), line: taskLine(task, date || now.toISOString()) });
     } else if (active && isThisWeekNotToday(date, now)) {
       weekItems.push({ date, line: taskLine(task, date, true) });
-    } else if (task.status === "completed" && isThisWeekNotToday(task.updated_at, now)) {
-      weekItems.push({ date: task.updated_at, line: taskLine(task, task.updated_at, true) });
     }
   }
 
-  for (const reminder of reminders.filter((r) => r.status === "pending" && r.trigger_at)) {
+  const activeTaskIds = new Set(tasks.filter((t) => activeTaskStatuses.has(t.status)).map((t) => t.id));
+  for (const reminder of reminders.filter((r) => r.status === "pending" && r.trigger_at && (!r.task_id || !activeTaskIds.has(r.task_id)))) {
     if (isToday(reminder.trigger_at, now)) {
       todayItems.push({ date: reminder.trigger_at, line: reminderLine(reminder) });
     } else if (isThisWeekNotToday(reminder.trigger_at, now)) {
       weekItems.push({ date: reminder.trigger_at, line: reminderLine(reminder, true) });
+    }
+  }
+
+  for (const occurrence of rules.flatMap((rule) => ruleOccurrencesInRange(rule, weekStart, weekEnd, now))) {
+    if (isToday(occurrence.trigger_at, now)) {
+      todayItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence) });
+    } else if (isThisWeekNotToday(occurrence.trigger_at, now)) {
+      weekItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence, true) });
     }
   }
 

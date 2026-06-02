@@ -66,6 +66,7 @@ async function waitUntilGone(pid, timeoutMs) {
 
 async function stopExistingAgents() {
   const pids = listAgentPids();
+  const survivors = [];
   for (const pid of pids) {
     try {
       process.kill(pid, "SIGTERM");
@@ -79,7 +80,16 @@ async function stopExistingAgents() {
       } catch {}
       await waitUntilGone(pid, 500);
     }
-    console.log(`[guard] stopped old agent pid ${pid}`);
+    if (processExists(pid)) {
+      survivors.push(pid);
+      console.error(`[guard] old agent pid ${pid} is still running`);
+    } else {
+      console.log(`[guard] stopped old agent pid ${pid}`);
+    }
+  }
+
+  if (survivors.length) {
+    throw new Error(`Cannot start: old agent process still running (${survivors.join(", ")}). Stop it from the Terminal that owns it, then retry.`);
   }
 }
 
