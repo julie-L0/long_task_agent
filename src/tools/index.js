@@ -44,7 +44,7 @@ export const toolDefinitions = [
     type: "function",
     function: {
       name: "update_task",
-      description: "更新任务字段。状态变更必须用户确认后才能调用。",
+      description: "更新任务字段。状态变更必须用户确认后才能调用；修改 hard_deadline/flexible_deadline 必须是用户明确说截止/DDL/最晚时间。",
       parameters: {
         type: "object",
         properties: {
@@ -61,6 +61,7 @@ export const toolDefinitions = [
           execution_mode: { type: "string", enum: ["fixed_duration", "deferrable"] },
           estimated_duration_min: { type: "number" },
           category: { type: "string", enum: ["work", "study", "life", "health"] },
+          deadline_change_confirmed: { type: "boolean", description: "只有用户明确说修改截止/DDL/最晚时间时才传 true；'X点之后做/再处理'不能传 true，应改 start_time。" },
         },
         required: ["id"],
       },
@@ -417,7 +418,14 @@ export async function executeTool(name, args) {
     }
 
     case "update_task": {
-      const { id, ...updates } = args;
+      const { id, deadline_change_confirmed, ...updates } = args;
+      const changesDeadline = Object.prototype.hasOwnProperty.call(updates, "hard_deadline") ||
+        Object.prototype.hasOwnProperty.call(updates, "flexible_deadline");
+      if (changesDeadline && !deadline_change_confirmed) {
+        return {
+          error: "修改截止时间需要用户明确说“截止/DDL/最晚”。如果用户只是说“X点之后做/再处理”，请只更新 start_time，不要改 hard_deadline/flexible_deadline。",
+        };
+      }
       updates.updated_at = new Date().toISOString();
       if (["in_progress", "completed", "paused"].includes(updates.status)) {
         updates.last_touched_at = new Date().toISOString();
@@ -656,12 +664,14 @@ export async function executeTool(name, args) {
       if (!project) return { error: `Project ${args.id} not found` };
 
       const updates = { last_progress_at: new Date().toISOString() };
+      let changed = false;
 
       if (project.progress_type === "percentage" && args.delta) {
         updates.progress_done = (project.progress_done || 0) + args.delta;
         updates.progress_percent = project.progress_total
           ? Math.min(100, Math.round((updates.progress_done / project.progress_total) * 100))
           : 0;
+        changed = true;
       }
 
       if (project.progress_type === "streak") {
@@ -680,6 +690,7 @@ export async function executeTool(name, args) {
           updates.progress_percent = project.streak_goal
             ? Math.min(100, Math.round(((updates.streak_current ?? project.streak_current) / project.streak_goal) * 100))
             : Math.min(100, Math.round((updates.daily_done / project.daily_quota) * 100));
+          changed = true;
           return {
             ...(await storage.updateItem("projects", args.id, updates, project)),
             daily_done: updates.daily_done,
@@ -697,8 +708,10 @@ export async function executeTool(name, args) {
           updates.progress_percent = project.streak_goal
             ? Math.min(100, Math.round((updates.streak_current / project.streak_goal) * 100))
             : 0;
+          changed = true;
         } else if (args.streak_action === "break") {
           updates.streak_current = 0;
+          changed = true;
         }
       }
 
@@ -708,6 +721,7 @@ export async function executeTool(name, args) {
         updates.progress_percent = stages.length
           ? Math.round((args.advance_to_stage / stages.length) * 100)
           : 0;
+        changed = true;
       }
 
       if (project.progress_type === "checklist" && args.check_item) {
@@ -720,6 +734,29 @@ export async function executeTool(name, args) {
         updates.progress_items_done = done.join(",");
         const total = (project.progress_items || "").split(",").filter(Boolean).length;
         updates.progress_percent = total ? Math.round((done.length / total) * 100) : 0;
+        changed = true;
+      }
+
+      if (!changed) {
+        const hint = {
+          percentage: "percentage 项目需要 delta",
+          streak: project.daily_quota ? "每日配额项目需要 streak_action=daily_checkin" : "streak 项目需要 streak_action=checkin 或 break",
+          stage: "stage 项目需要 advance_to_stage",
+          checklist: "checklist 项目需要 check_item",
+        }[project.progress_type] || "未知项目类型，无法判断需要的推进字段";
+        return {
+          error: `这次没有更新项目进度：${hint}。已有项目信息仍在，不要要求用户重建整个项目；只追问这一个缺失字段。`,
+          project: {
+            id: project.id,
+            name: project.name,
+            progress_type: project.progress_type,
+            description: project.description,
+            progress_stages: project.progress_stages,
+            progress_items: project.progress_items,
+            progress_current_stage: project.progress_current_stage,
+            progress_percent: project.progress_percent,
+          },
+        };
       }
 
       // 写 progress log
@@ -738,7 +775,7 @@ export async function executeTool(name, args) {
       };
       await storage.createItem("progress_logs", log);
 
-      const updated = await storage.updateItem("projects", args.id, updates);
+      const updated = await storage.updateItem("projects", args.id, updates, project);
       return updated || { error: "Update failed" };
     }
 

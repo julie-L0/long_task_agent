@@ -1,6 +1,15 @@
 import dayjs from "dayjs";
 
 const DAY_NAMES = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const DAY_LABELS = {
+  sun: "周日",
+  mon: "周一",
+  tue: "周二",
+  wed: "周三",
+  thu: "周四",
+  fri: "周五",
+  sat: "周六",
+};
 
 export function parseRuleTrigger(triggerCondition) {
   if (!triggerCondition || triggerCondition === "persona") return null;
@@ -86,4 +95,17 @@ export function ruleOccurrencesInRange(rule, start, end, now = dayjs()) {
   }
 
   return occurrences;
+}
+
+export function formatRuleSchedule(rule) {
+  const parsed = parseRuleTrigger(rule.trigger_condition);
+  if (!parsed) return null;
+
+  const time = `${String(parsed.hour).padStart(2, "0")}:${String(parsed.minute).padStart(2, "0")}`;
+  if (parsed.type === "daily") return `每天 ${time}`;
+  return `每周${parsed.days.map((d) => DAY_LABELS[d] || d).join("、")} ${time}`;
+}
+
+export function isDailyRule(rule) {
+  return parseRuleTrigger(rule.trigger_condition)?.type === "daily";
 }

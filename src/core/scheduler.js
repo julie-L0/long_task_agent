@@ -79,6 +79,22 @@ async function checkUserRules() {
 
 let lastSilenceCheckAt = null;
 const SILENCE_CHECK_COOLDOWN_MIN = 30;
+const nudgeMemory = new Map();
+
+function recentlyNudged(key, now = dayjs(), cooldownMin = 240) {
+  const last = nudgeMemory.get(key);
+  if (!last) return false;
+  return now.diff(dayjs(last), "minute") < cooldownMin;
+}
+
+function markNudged(key, now = dayjs()) {
+  nudgeMemory.set(key, now.toISOString());
+}
+
+export function isTaskAvailableForNudge(task, now = dayjs()) {
+  if (!task.start_time || !dayjs(task.start_time).isValid()) return true;
+  return !dayjs(task.start_time).isAfter(now);
+}
 
 async function hasActiveTimer() {
   const timeline = await normalizeOpenTimelineEvents(await storage.listItems("timeline"));
@@ -161,6 +177,7 @@ async function checkDeferrableOpportunity() {
   const tasks = (await storage.listItems("tasks")).filter(
     (t) =>
       (t.status === "pending" || t.status === "in_progress") &&
+      isTaskAvailableForNudge(t, now) &&
       t.execution_mode === "deferrable" &&
       (
         // 今天截止（hard）
@@ -173,11 +190,15 @@ async function checkDeferrableOpportunity() {
 
   if (!tasks.length) return;
 
-  lastDeferrableCheckAt = now.toISOString();
   const isToday = (task) => task.hard_deadline && dayjs(task.hard_deadline).isSame(now, "day") ? 1 : 0;
   tasks.sort((a, b) => (isToday(b) - isToday(a)) || (priorityScore(b) - priorityScore(a)));
-  const top = tasks[0];
-  const rest = tasks.length > 1 ? `（还有 ${tasks.length - 1} 项本周要做）` : "";
+  const top = tasks.find((task) => !recentlyNudged(`deferrable:${task.id}`, now, 240));
+  if (!top) return;
+
+  lastDeferrableCheckAt = now.toISOString();
+  markNudged(`deferrable:${top.id}`, now);
+  const restCount = tasks.filter((task) => task.id !== top.id).length;
+  const rest = restCount ? `（还有 ${restCount} 项本周要做）` : "";
   const ddlTag = top.hard_deadline && dayjs(top.hard_deadline).isSame(now, "day") ? "今天截止，" : "";
 
   if (onReminderFired) {
@@ -213,17 +234,22 @@ async function checkStaleProjects() {
   }
 
   const tasks = (await storage.listItems("tasks")).filter(
-    (t) => t.status === "pending" || t.status === "in_progress"
+    (t) => (t.status === "pending" || t.status === "in_progress") && isTaskAvailableForNudge(t, now)
   );
   const staleTasks = [];
   const expiringTasks = [];
   for (const task of tasks) {
     const lastTouched = dayjs(task.last_touched_at || task.created_at);
-    if (task.hard_deadline && dayjs(task.hard_deadline).isSame(now, "day") && hour >= 20) {
+    if (
+      task.hard_deadline &&
+      dayjs(task.hard_deadline).isSame(now, "day") &&
+      hour >= 20 &&
+      !recentlyNudged(`expiring:${task.id}`, now, STALE_CHECK_COOLDOWN_MIN)
+    ) {
       expiringTasks.push(task);
       continue;
     }
-    if (now.diff(lastTouched, "hour") >= 24) {
+    if (now.diff(lastTouched, "hour") >= 24 && !recentlyNudged(`stale-task:${task.id}`, now, STALE_CHECK_COOLDOWN_MIN)) {
       staleTasks.push(task);
     }
   }
@@ -231,6 +257,8 @@ async function checkStaleProjects() {
   if (expiringTasks.length) {
     expiringTasks.sort((a, b) => priorityScore(b) - priorityScore(a));
     const list = expiringTasks.map((t) => `「${t.title}」`).join("、");
+    for (const task of expiringTasks) markNudged(`expiring:${task.id}`, now);
+    lastStaleCheckAt = now.toISOString();
     if (onReminderFired) {
       onReminderFired({
         id: "expiring-nudge",
@@ -238,11 +266,13 @@ async function checkStaleProjects() {
         message: `${list} 今天截止，现在已经晚上了。现在做还是挪到明天？`,
       });
     }
+    return;
   }
 
   if (!staleProjects.length && !staleTasks.length) return;
 
   lastStaleCheckAt = now.toISOString();
+  for (const task of staleTasks) markNudged(`stale-task:${task.id}`, now);
 
   staleTasks.sort((a, b) => priorityScore(b) - priorityScore(a));
 

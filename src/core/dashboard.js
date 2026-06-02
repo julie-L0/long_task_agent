@@ -1,7 +1,7 @@
 import dayjs from "dayjs";
 import * as storage from "../storage/index.js";
 import { normalizeOpenTimelineEvents, OPEN_TIMELINE_MAX_MIN } from "./timeline.js";
-import { ruleOccurrencesInRange } from "./rules.js";
+import { formatRuleSchedule, isDailyRule, ruleOccurrencesInRange } from "./rules.js";
 
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
@@ -76,6 +76,12 @@ function ruleLine(occurrence, withDate = false) {
   return parts.join(" ");
 }
 
+function recurringRuleLine(rule) {
+  const schedule = formatRuleSchedule(rule);
+  if (!schedule) return null;
+  return `🔁 ${schedule} ${rule.message || rule.name}`;
+}
+
 function eventLine(event) {
   const startedAt = dayjs(event.start_time);
   const elapsed = Math.max(0, Math.min(dayjs().diff(startedAt, "minute"), OPEN_TIMELINE_MAX_MIN));
@@ -100,6 +106,7 @@ export async function buildDashboard() {
 
   const todayItems = [];
   const weekItems = [];
+  const recurringItems = [];
   const activeTaskStatuses = new Set(["pending", "in_progress"]);
   const weekStart = startOfWeek(now);
   const weekEnd = weekStart.add(6, "day").endOf("day");
@@ -129,11 +136,19 @@ export async function buildDashboard() {
     }
   }
 
-  for (const occurrence of rules.flatMap((rule) => ruleOccurrencesInRange(rule, weekStart, weekEnd, now))) {
-    if (isToday(occurrence.trigger_at, now)) {
-      todayItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence) });
-    } else if (isThisWeekNotToday(occurrence.trigger_at, now)) {
-      weekItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence, true) });
+  for (const rule of rules.filter((r) => r.status === "active" && r.trigger_condition !== "persona")) {
+    if (isDailyRule(rule)) {
+      const line = recurringRuleLine(rule);
+      if (line) recurringItems.push(line);
+      continue;
+    }
+
+    for (const occurrence of ruleOccurrencesInRange(rule, weekStart, weekEnd, now)) {
+      if (isToday(occurrence.trigger_at, now)) {
+        todayItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence) });
+      } else if (isThisWeekNotToday(occurrence.trigger_at, now)) {
+        weekItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence, true) });
+      }
     }
   }
 
@@ -145,6 +160,10 @@ export async function buildDashboard() {
 
   if (weekItems.length) {
     lines.push("", "📋 本周待办（周一至周日）", ...weekItems.sort(sortByDate).map((item) => item.line));
+  }
+
+  if (recurringItems.length) {
+    lines.push("", "🔁 重复提醒", ...[...new Set(recurringItems)].sort());
   }
 
   const checkinProjects = projects.filter((p) => p.status === "active" && p.progress_type === "streak");
@@ -168,9 +187,17 @@ export async function buildDashboard() {
     lines.push("", "📊 长期项目");
     for (const p of activeProjects.sort((a, b) => new Date(a.last_progress_at || a.created_at || 0) - new Date(b.last_progress_at || b.created_at || 0))) {
       const staleDays = p.last_progress_at ? now.diff(dayjs(p.last_progress_at), "day") : now.diff(dayjs(p.created_at), "day");
-      const progress = p.progress_type === "stage"
-        ? `阶段 ${p.progress_current_stage || 0}`
-        : `${p.progress_percent || 0}%`;
+      let progress = `${p.progress_percent || 0}%`;
+      if (p.progress_type === "stage") {
+        const stages = String(p.progress_stages || "").split(",").filter(Boolean);
+        const current = Number(p.progress_current_stage || 0);
+        const currentName = stages[current - 1] ? `「${stages[current - 1]}」` : "";
+        progress = `阶段 ${current}/${stages.length || "?"}${currentName}`;
+      } else if (p.progress_type === "checklist") {
+        const total = String(p.progress_items || "").split(",").filter(Boolean).length;
+        const done = String(p.progress_items_done || "").split(",").filter(Boolean).length;
+        progress = `清单 ${done}/${total || "?"}`;
+      }
       lines.push(`${p.name}  ${progress}  已 ${Math.max(staleDays, 0)} 天未推进`);
     }
   }

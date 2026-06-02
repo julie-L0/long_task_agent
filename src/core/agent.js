@@ -8,7 +8,7 @@ import * as storage from "../storage/index.js";
 import { getState } from "./interruptibility.js";
 import { buildDashboard } from "./dashboard.js";
 import { normalizeOpenTimelineEvents, OPEN_TIMELINE_MAX_MIN } from "./timeline.js";
-import { ruleOccurrencesInRange } from "./rules.js";
+import { formatRuleSchedule, isDailyRule, ruleOccurrencesInRange } from "./rules.js";
 
 function isDashboardRequest(message) {
   return /^(面板|状态|dashboard|看看今天|今天怎么样|今日待办|今天有什么|本周待办|这周有什么)\s*$/i.test(message.trim());
@@ -57,6 +57,37 @@ function recordRecentWrite(toolName, result) {
   recentWrites.push({ at: Date.now(), summary });
   cleanupRecentWrites();
   while (recentWrites.length > 30) recentWrites.shift();
+}
+
+function splitList(value) {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function projectProgressSummary(project) {
+  if (project.progress_type === "stage") {
+    const stages = splitList(project.progress_stages);
+    const current = Number(project.progress_current_stage || 0);
+    const currentName = stages[current - 1] ? `「${stages[current - 1]}」` : "";
+    return `阶段 ${current}/${stages.length || "?"}${currentName}`;
+  }
+
+  if (project.progress_type === "checklist") {
+    const items = splitList(project.progress_items);
+    const done = splitList(project.progress_items_done);
+    return `清单 ${done.length}/${items.length || "?"}${done.length ? ` 已完成:${done.join("、")}` : ""}`;
+  }
+
+  if (project.progress_type === "streak") {
+    if (project.daily_quota) {
+      const today = dayjs().format("YYYY-MM-DD");
+      const dailyDone = project.daily_reset_date === today ? (project.daily_done || 0) : 0;
+      return `每日配额 ${dailyDone}/${project.daily_quota} | 连续 ${project.streak_current || 0} 天`;
+    }
+    return `连续 ${project.streak_current || 0} 天 | 总计 ${project.streak_total || 0}`;
+  }
+
+  return `${project.progress_percent || 0}% | 已完成 ${project.progress_done || 0}${project.progress_unit || ""}/${project.progress_total || "?"}${project.progress_unit || ""}`;
 }
 
 async function loadActiveContext() {
@@ -113,13 +144,15 @@ async function loadActiveContext() {
   if (activeProjects.length) {
     contextBlock += "\n### 活跃项目\n";
     for (const p of activeProjects) {
-      contextBlock += `- 【${p.name}】${p.status} | 进度 ${p.progress_percent || 0}% | ${p.progress_type || "无"} | 上次推进 ${p.last_progress_at || "从未"}`;
-      if (p.daily_quota) {
-        const today = dayjs().format("YYYY-MM-DD");
-        const dailyDone = p.daily_reset_date === today ? (p.daily_done || 0) : 0;
-        contextBlock += ` | 今日 ${dailyDone}/${p.daily_quota}`;
+      contextBlock += `- 【${p.name}】id:${p.id} ${p.status} | ${p.progress_type || "无"} | ${projectProgressSummary(p)} | 上次推进 ${p.last_progress_at || "从未"}\n`;
+      if (p.description) contextBlock += `  · 描述：${p.description}\n`;
+      const stages = splitList(p.progress_stages);
+      if (stages.length) contextBlock += `  · 阶段列表：${stages.map((name, index) => `${index + 1}.${name}`).join("、")}\n`;
+      const checklist = splitList(p.progress_items);
+      if (checklist.length) {
+        const done = new Set(splitList(p.progress_items_done));
+        contextBlock += `  · 清单：${checklist.map((item) => `${done.has(item) ? "✓" : "□"}${item}`).join("、")}\n`;
       }
-      contextBlock += "\n";
       // Show last 3 progress logs for this project
       const logs = progressLogs
         .filter((l) => l.project_id === p.id)
@@ -167,6 +200,7 @@ async function loadActiveContext() {
   const activeTasks = allTasks.filter((t) => ["pending", "in_progress"].includes(t.status));
   const todayDashboard = [];
   const weekDashboard = [];
+  const recurringDashboard = [];
 
   if (openEvent) {
     const elapsed = Math.min(Math.max(dayjs().diff(dayjs(openEvent.start_time), "minute"), 0), OPEN_TIMELINE_MAX_MIN);
@@ -194,6 +228,14 @@ async function loadActiveContext() {
   }
 
   const ruleOccurrences = activeRules
+    .filter((rule) => {
+      if (!isDailyRule(rule)) return true;
+      const schedule = formatRuleSchedule(rule);
+      if (schedule && rule.trigger_condition !== "persona") {
+        recurringDashboard.push(`重复规则 ${schedule} ${rule.message || rule.name} id:${rule.id}`);
+      }
+      return false;
+    })
     .flatMap((rule) => ruleOccurrencesInRange(rule, startOfWeek, endOfWeek, now))
     .sort((a, b) => new Date(a.trigger_at) - new Date(b.trigger_at));
   for (const occurrence of ruleOccurrences) {
@@ -208,6 +250,7 @@ async function loadActiveContext() {
 
   contextBlock += todayDashboard.length ? `- 今日：${todayDashboard.join("；")}\n` : "- 今日：无\n";
   contextBlock += weekDashboard.length ? `- 本周：${weekDashboard.join("；")}\n` : "- 本周：无\n";
+  contextBlock += recurringDashboard.length ? `- 重复提醒：${[...new Set(recurringDashboard)].join("；")}\n` : "- 重复提醒：无\n";
 
   if (!activeProjects.length && !tasks.length && !pendingReminders.length) {
     contextBlock += "\n（当前无活跃项目、任务或提醒）\n";
