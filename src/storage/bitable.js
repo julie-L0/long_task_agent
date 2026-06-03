@@ -18,6 +18,20 @@ function findLarkCli() {
 
 const LARK_CLI = findLarkCli();
 
+// Per-request cache: invalidated after any write, or after TTL
+const CACHE_TTL_MS = 30_000;
+const _cache = new Map(); // collection -> { data, at }
+
+function cacheGet(collection) {
+  const entry = _cache.get(collection);
+  if (!entry) return null;
+  if (Date.now() - entry.at > CACHE_TTL_MS) { _cache.delete(collection); return null; }
+  return entry.data;
+}
+
+function cacheSet(collection, data) { _cache.set(collection, { data, at: Date.now() }); }
+function cacheInvalidate(collection) { _cache.delete(collection); }
+
 function baseToken() {
   const t = process.env.BITABLE_APP_TOKEN;
   if (!t) throw new Error("Missing env: BITABLE_APP_TOKEN");
@@ -110,6 +124,9 @@ function toCellValue(value) {
 }
 
 async function allRecords(collection) {
+  const cached = cacheGet(collection);
+  if (cached) return cached;
+
   const base = baseToken();
   const tbl = tableId(collection);
   const PAGE = 200;
@@ -132,6 +149,7 @@ async function allRecords(collection) {
     if (!hasMore || page.length < PAGE) break;
     offset += PAGE;
   }
+  cacheSet(collection, items);
   return items;
 }
 
@@ -171,6 +189,7 @@ export async function createItem(collection, item) {
     "--json", JSON.stringify({ fields, rows: [row] }),
     "--as", "bot",
   ]);
+  cacheInvalidate(collection);
   return item;
 }
 
@@ -194,6 +213,7 @@ export async function updateItem(collection, id, updates, existingHint = null) {
     "--json", JSON.stringify({ record_id_list: [existing._record_id], patch }),
     "--as", "bot",
   ]);
+  cacheInvalidate(collection);
 
   // Return merged result — avoids re-reading tabular format which may omit zero-value columns
   const result = { ...existing };
@@ -215,5 +235,6 @@ export async function deleteItem(collection, id) {
     "--yes",
     "--as", "bot",
   ]);
+  cacheInvalidate(collection);
   return true;
 }

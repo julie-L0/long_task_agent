@@ -504,33 +504,7 @@ export async function executeTool(name, args) {
         return { error: "create_reminder 需要有效的 trigger_at ISO 时间" };
       }
       const reminderType = args.type === "user_rule" ? "task_start" : (args.type || "task_start");
-      let taskId = args.task_id || null;
-
-      if (!taskId && ["task_start", "task_deadline"].includes(reminderType)) {
-        const triggerAt = args.trigger_at;
-        const linkedTask = {
-          id: randomUUID(),
-          title: args.message,
-          project: null,
-          category: null,
-          importance: "medium",
-          urgency: "medium",
-          estimated_duration_min: null,
-          hard_deadline: reminderType === "task_deadline" ? triggerAt : null,
-          flexible_deadline: null,
-          start_time: reminderType === "task_start" ? triggerAt : null,
-          end_time: null,
-          execution_mode: "deferrable",
-          status: "pending",
-          recurrence_rule: null,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          last_touched_at: new Date().toISOString(),
-          notes: "auto_created_from_reminder",
-        };
-        await storage.createItem("tasks", linkedTask);
-        taskId = linkedTask.id;
-      }
+      const taskId = args.task_id || null;
 
       const reminder = {
         id: randomUUID(),
