@@ -279,6 +279,8 @@ async function checkStaleProjects() {
       expiringTasks.push(task);
       continue;
     }
+    // fixed_duration 任务本身是固定时间点事项，不适用"长期没推进"检测
+    if (task.execution_mode === "fixed_duration") continue;
     if (now.diff(lastTouched, "hour") >= 24 && !recentlyNudged(`stale-task:${task.id}`, now, STALE_CHECK_COOLDOWN_MIN)) {
       staleTasks.push(task);
     }
