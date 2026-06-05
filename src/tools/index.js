@@ -152,6 +152,7 @@ export const toolDefinitions = [
           related_task_id: { type: "string" },
           current_active_task: { type: "string", description: "当前在做什么（自然语言描述）" },
           expected_next_action: { type: "string", description: "预计完成后下一步做什么（如'休息后继续论文'/'跑步后洗澡'）" },
+          focus_mode: { type: "boolean", description: "是否专注模式。写作/学习/开会/写代码等需要深度专注的活动设为 true；通勤/休息/娱乐等可中断活动设为 false。默认 false。" },
           source: { type: "string", enum: ["user_input", "ai_inferred", "system"] },
         },
         required: ["start_time", "activity_type"],

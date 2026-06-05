@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "fs";
 import { resolve } from "path";
 import dayjs from "dayjs";
 import { config } from "./config.js";
+import * as storage from "../storage/index.js";
 
 const STATE_FILE = resolve(config.dataDir, "interruptibility.json");
 
@@ -53,4 +54,15 @@ export function autoExpire() {
 
 export function isInterruptible() {
   return getState().status === "open";
+}
+
+export async function hasOpenFocusEvent() {
+  const items = await storage.listItems("timeline");
+  return items.some(e => !e.end_time && e.focus_mode === true);
+}
+
+// manual DND blocks everything; focus_mode blocks proactive nudges (high-urgency reminders can still penetrate)
+export async function canSendProactiveNudge() {
+  if (!isInterruptible()) return false;
+  return !(await hasOpenFocusEvent());
 }

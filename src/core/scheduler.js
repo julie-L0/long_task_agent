@@ -1,9 +1,12 @@
 import cron from "node-cron";
 import dayjs from "dayjs";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { resolve } from "path";
 import * as storage from "../storage/index.js";
-import { isInterruptible, autoExpire } from "./interruptibility.js";
+import { isInterruptible, autoExpire, canSendProactiveNudge, hasOpenFocusEvent } from "./interruptibility.js";
 import { normalizeOpenTimelineEvents } from "./timeline.js";
 import { shouldTriggerUserRule } from "./rules.js";
+import { config } from "./config.js";
 
 let onReminderFired = null;
 let getLastMessageAt = () => null;
@@ -19,15 +22,23 @@ export function setSilenceDetectionSource(getLastMsg, getThreshold) {
 }
 
 async function checkReminders() {
-  autoExpire(); // reset dnd_until_time if expired
-  if (!isInterruptible()) return;
+  autoExpire();
+  const manualDND = !isInterruptible();
+  const focusActive = !manualDND && await hasOpenFocusEvent();
+  if (manualDND && !focusActive) return; // fully suppressed
 
   const now = dayjs();
   const reminders = (await storage.listItems("reminders")).filter(r => r.status === "pending");
+  let tasks = null;
+  if (focusActive) tasks = await storage.listItems("tasks");
 
   for (const reminder of reminders) {
     const triggerAt = dayjs(reminder.trigger_at);
     if (now.isAfter(triggerAt) || now.isSame(triggerAt)) {
+      if (focusActive) {
+        const task = reminder.task_id ? (tasks || []).find(t => t.id === reminder.task_id) : null;
+        if (!task || task.urgency !== "high") continue; // only high-urgency penetrates focus
+      }
       if (reminder.repeat_until_confirmed) {
         const lastFired = reminder.last_fired_at ? dayjs(reminder.last_fired_at) : null;
         if (lastFired && now.diff(lastFired, "minute") < 5) continue;
@@ -50,7 +61,7 @@ function priorityScore(task) {
 
 async function checkUserRules() {
   autoExpire();
-  if (!isInterruptible()) return;
+  if (!await canSendProactiveNudge()) return;
 
   const now = dayjs();
   const today = now.format("YYYY-MM-DD");
@@ -79,7 +90,22 @@ async function checkUserRules() {
 
 let lastSilenceCheckAt = null;
 const SILENCE_CHECK_COOLDOWN_MIN = 30;
-const nudgeMemory = new Map();
+
+const NUDGE_HISTORY_FILE = resolve(config.dataDir, "nudge-history.json");
+
+function loadNudgeHistory() {
+  if (!existsSync(NUDGE_HISTORY_FILE)) return {};
+  try { return JSON.parse(readFileSync(NUDGE_HISTORY_FILE, "utf8")); }
+  catch { return {}; }
+}
+
+// Map 兼容接口，reads/writes 直接持久化到文件
+const nudgeMemory = {
+  _cache: null,
+  _data() { if (!this._cache) this._cache = loadNudgeHistory(); return this._cache; },
+  get(key) { return this._data()[key]; },
+  set(key, value) { this._data()[key] = value; writeFileSync(NUDGE_HISTORY_FILE, JSON.stringify(this._data(), null, 2), "utf8"); },
+};
 
 function recentlyNudged(key, now = dayjs(), cooldownMin = 240) {
   const last = nudgeMemory.get(key);
@@ -103,7 +129,7 @@ async function hasActiveTimer() {
 
 async function checkSilence() {
   autoExpire();
-  if (!isInterruptible()) return;
+  if (!await canSendProactiveNudge()) return;
 
   const now = dayjs();
   const hour = now.hour();
@@ -129,15 +155,19 @@ async function checkSilence() {
 }
 
 async function checkExpectedNextAction() {
-  if (!isInterruptible()) return;
+  if (!await canSendProactiveNudge()) return;
 
   const now = dayjs();
   const hour = now.hour();
   if (hour < 8 || hour >= 23) return;
 
   const all = await normalizeOpenTimelineEvents(await storage.listItems("timeline"));
+  // work/commute 类活动持续时间本来就长，不适合用 90 分钟阈值来追问
+  const LONG_ACTIVITY_TYPES = new Set(["work", "commute", "travel"]);
+
   const openWithNext = all.filter(
     (e) => !e.end_time && e.expected_next_action && !e.next_action_notified
+      && !LONG_ACTIVITY_TYPES.has(e.activity_type)
   );
 
   for (const event of openWithNext) {
@@ -163,7 +193,7 @@ let lastDeferrableCheckAt = null;
 const DEFERRABLE_CHECK_COOLDOWN_MIN = 90;
 
 async function checkDeferrableOpportunity() {
-  if (!isInterruptible()) return;
+  if (!await canSendProactiveNudge()) return;
 
   const now = dayjs();
   const hour = now.hour();
@@ -214,7 +244,7 @@ let lastStaleCheckAt = null;
 const STALE_CHECK_COOLDOWN_MIN = 240; // 4小时内不重复推同一批
 
 async function checkStaleProjects() {
-  if (!isInterruptible()) return;
+  if (!await canSendProactiveNudge()) return;
 
   const now = dayjs();
   const hour = now.hour();
@@ -305,7 +335,7 @@ let lastQuotaCheckAt = null;
 const QUOTA_CHECK_COOLDOWN_MIN = 90;
 
 async function checkDailyQuota() {
-  if (!isInterruptible()) return;
+  if (!await canSendProactiveNudge()) return;
 
   const now = dayjs();
   const hour = now.hour();
@@ -338,6 +368,33 @@ async function checkDailyQuota() {
   }
 }
 
+async function checkFocusExit() {
+  if (!isInterruptible()) return; // manual DND, not focus mode
+
+  const now = dayjs();
+  const hour = now.hour();
+  if (hour < 8 || hour >= 23) return;
+
+  const items = await storage.listItems("timeline");
+  const recentlyClosed = items.find(e =>
+    e.focus_mode === true &&
+    e.end_time &&
+    !e.exit_summary_sent &&
+    now.diff(dayjs(e.end_time), "minute") < 6
+  );
+  if (!recentlyClosed) return;
+
+  await storage.updateItem("timeline", recentlyClosed.id, { exit_summary_sent: true });
+
+  if (onReminderFired) {
+    onReminderFired({
+      id: `focus-exit-${recentlyClosed.id}`,
+      type: "focus_exit",
+      message: "[系统触发] 用户刚结束专注模式。请汇总当前待处理事项：今天截止的任务、高优先级待办、24小时未推进的项目、未完成的每日配额。用自然语言简洁呈现（不超过4条），结尾可问用户接下来打算做什么，不要逐条追问。",
+    });
+  }
+}
+
 async function checkStreakBreaks() {
   const now = dayjs();
   const yesterday = now.subtract(1, "day").format("YYYY-MM-DD");
@@ -364,6 +421,7 @@ export function startScheduler() {
   cron.schedule("* * * * *", checkSilence);   // every minute so threshold is accurate
   cron.schedule("*/5 * * * *", checkDeferrableOpportunity);
   cron.schedule("*/5 * * * *", checkDailyQuota);
+  cron.schedule("*/5 * * * *", checkFocusExit);
   cron.schedule("0 * * * *", checkStaleProjects);
   cron.schedule("0 * * * *", checkExpectedNextAction);
   cron.schedule("1 0 * * *", checkStreakBreaks);  // daily at 00:01

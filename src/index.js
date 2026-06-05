@@ -9,7 +9,7 @@ import { startScheduler, setReminderHandler, setSilenceDetectionSource } from ".
 import { createCLI } from "./channel/cli.js";
 import { createWeixinChannel } from "./channel/weixin.js";
 import * as storage from "./storage/index.js";
-import { setState } from "./core/interruptibility.js";
+import { setState, isInterruptible, canSendProactiveNudge } from "./core/interruptibility.js";
 import { normalizeOpenTimelineEvents } from "./core/timeline.js";
 
 // Only allow running as a direct script, not via node -e or --input-type
@@ -209,10 +209,19 @@ async function handleMessage(input, userId, source = "user") {
     if (userId) currentUserId = userId;
     lastMessageAt = Date.now();
     try {
+      // 调度器触发的消息在 dnd 状态下直接丢弃，不走 LLM（避免 LLM 回"好。"被发给用户）
+      if (source === "scheduler" && !await canSendProactiveNudge()) {
+        console.log(`[index] scheduler trigger suppressed (dnd/focus): "${input.slice(0, 60)}"`);
+        return;
+      }
+
       if (source === "user") {
         const dndUntil = parseDoNotAskUntil(input);
         if (dndUntil) {
           setState("dnd_until_time", { until: dndUntil, reason: input, set_by: "user" });
+        } else if (/别问|不要问|别提醒|不要提醒|别打扰|不要打扰|不打扰|安静一下|让我静静/.test(input)) {
+          // 没有具体时间，设为"等用户主动确认才恢复"
+          setState("dnd_until_user_confirms", { reason: input, set_by: "user" });
         }
       }
 
@@ -266,8 +275,12 @@ async function handleMessage(input, userId, source = "user") {
   });
 }
 
-function handleReminder(reminder) {
+async function handleReminder(reminder) {
   if (reminder.type === "user_rule") {
+    if (!await canSendProactiveNudge()) {
+      console.log(`[reminder] type=user_rule skipped (dnd/focus) msg="${reminder.message}"`);
+      return;
+    }
     console.log(`[reminder] type=user_rule direct=true userId=${currentUserId} msg="${reminder.message}"`);
     if (reminder.persistence && reminder.stop_condition === "user_confirms") {
       pendingUserRules.set(reminder.id, {
@@ -281,12 +294,14 @@ function handleReminder(reminder) {
     return;
   }
 
-  const interactive = reminder.type === "task_checkin" || reminder.type === "silence_check" || reminder.type === "project_nudge";
+  const interactive = reminder.type === "task_checkin" || reminder.type === "silence_check" || reminder.type === "project_nudge" || reminder.type === "focus_exit";
   console.log(`[reminder] type=${reminder.type} interactive=${interactive} userId=${currentUserId} msg="${reminder.message}"`);
 
   if (interactive) {
     let tag;
     if (reminder.type === "silence_check") {
+      tag = `[系统触发] ${reminder.message}`;
+    } else if (reminder.type === "focus_exit") {
       tag = `[系统触发] ${reminder.message}`;
     } else if (reminder.type === "project_nudge") {
       tag = `[系统触发] ${reminder.message} 请用自然语言向用户展示，根据用户回应决定下一步（推进任务、挪期或忽略）。`;
