@@ -212,9 +212,10 @@ async function checkDeferrableOpportunity() {
       (
         // 今天截止（hard）
         (t.hard_deadline && dayjs(t.hard_deadline).isSame(now, "day")) ||
-        // 本周内截止（hard 或 flexible）
-        (t.hard_deadline && dayjs(t.hard_deadline).isBefore(endOfWeek)) ||
-        (t.flexible_deadline && dayjs(t.flexible_deadline).isBefore(endOfWeek))
+        // 本周内截止（hard）— 含之前的天（错过但还未完成）
+        (t.hard_deadline && dayjs(t.hard_deadline).isBefore(endOfWeek) && !dayjs(t.hard_deadline).isSame(now, "day")) ||
+        // 本周内弹性截止（flexible），今天已满足"在截止前"条件
+        (t.flexible_deadline && dayjs(t.flexible_deadline).isAfter(now) && dayjs(t.flexible_deadline).isBefore(endOfWeek))
       )
   );
 
@@ -229,7 +230,9 @@ async function checkDeferrableOpportunity() {
   markNudged(`deferrable:${top.id}`, now);
   const restCount = tasks.filter((task) => task.id !== top.id).length;
   const rest = restCount ? `（还有 ${restCount} 项本周要做）` : "";
-  const ddlTag = top.hard_deadline && dayjs(top.hard_deadline).isSame(now, "day") ? "今天截止，" : "";
+  const todayDeadline = top.hard_deadline && dayjs(top.hard_deadline).isSame(now, "day");
+  const flexDeadline = !todayDeadline && top.flexible_deadline ? `${dayjs(top.flexible_deadline).format("M月D日")}前要做，` : "";
+  const ddlTag = todayDeadline ? "今天截止，" : flexDeadline;
 
   if (onReminderFired) {
     onReminderFired({

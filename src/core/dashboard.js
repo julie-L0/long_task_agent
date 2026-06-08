@@ -108,8 +108,22 @@ export async function buildDashboard() {
   const weekItems = [];
   const recurringItems = [];
   const activeTaskStatuses = new Set(["pending", "in_progress"]);
-  const weekStart = startOfWeek(now);
-  const weekEnd = weekStart.add(6, "day").endOf("day");
+  // On weekends (sat/sun), show remainder of this weekend + next Mon-Fri
+  // On weekdays, show Mon-Sun of current week
+  const dow = now.day(); // 0=sun,6=sat
+  const isWeekend = dow === 0 || dow === 6;
+  let weekDisplayStart, weekDisplayEnd;
+  if (isWeekend) {
+    weekDisplayStart = now.startOf("day").add(1, "day"); // tomorrow
+    if (dow === 6) weekDisplayEnd = now.startOf("day").add(6, "day").endOf("day"); // sat → next fri (sun+mon~fri)
+    if (dow === 0) weekDisplayEnd = now.startOf("day").add(5, "day").endOf("day"); // sun → next fri (mon~fri)
+  } else {
+    weekDisplayStart = startOfWeek(now);
+    weekDisplayEnd = weekDisplayStart.add(6, "day").endOf("day");
+  }
+  const weekStart = weekDisplayStart;
+  const weekEnd = weekDisplayEnd;
+  const weekLabel = isWeekend ? (dow === 6 ? "本周日+下周一至周五" : "下周一至周五") : "周一至周日";
 
   for (const event of timeline.filter((e) => e.start_time && !e.end_time)) {
     if (isToday(event.start_time, now)) {
@@ -117,12 +131,18 @@ export async function buildDashboard() {
     }
   }
 
+  function isInWeekRange(value) {
+    if (!value || !dayjs(value).isValid() || isToday(value, now)) return false;
+    const d = dayjs(value);
+    return (d.isSame(weekStart, "day") || d.isAfter(weekStart)) && (d.isSame(weekEnd, "day") || d.isBefore(weekEnd));
+  }
+
   for (const task of tasks) {
     const date = taskDate(task);
     const active = activeTaskStatuses.has(task.status);
     if (active && (isToday(date, now) || task.status === "in_progress")) {
       todayItems.push({ date: date || task.updated_at || now.toISOString(), line: taskLine(task, date || now.toISOString()) });
-    } else if (active && isThisWeekNotToday(date, now)) {
+    } else if (active && isInWeekRange(date)) {
       weekItems.push({ date, line: taskLine(task, date, true) });
     }
   }
@@ -131,7 +151,7 @@ export async function buildDashboard() {
   for (const reminder of reminders.filter((r) => r.status === "pending" && r.trigger_at && (!r.task_id || !activeTaskIds.has(r.task_id)))) {
     if (isToday(reminder.trigger_at, now)) {
       todayItems.push({ date: reminder.trigger_at, line: reminderLine(reminder) });
-    } else if (isThisWeekNotToday(reminder.trigger_at, now)) {
+    } else if (isInWeekRange(reminder.trigger_at)) {
       weekItems.push({ date: reminder.trigger_at, line: reminderLine(reminder, true) });
     }
   }
@@ -146,12 +166,13 @@ export async function buildDashboard() {
     for (const occurrence of ruleOccurrencesInRange(rule, weekStart, weekEnd, now)) {
       if (isToday(occurrence.trigger_at, now)) {
         todayItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence) });
-      } else if (isThisWeekNotToday(occurrence.trigger_at, now)) {
+      } else if (isInWeekRange(occurrence.trigger_at)) {
         weekItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence, true) });
       }
     }
   }
 
+  const weekLabel2 = isWeekend ? (dow === 6 ? "本周日+下周一至周五" : "下周一至周五") : "周一至周日";
   const lines = [`📅 ${now.format("M月D日")} ${WEEKDAYS[now.day()]}  ${now.format("HH:mm")}`];
 
   if (todayItems.length) {
@@ -159,7 +180,7 @@ export async function buildDashboard() {
   }
 
   if (weekItems.length) {
-    lines.push("", "📋 本周待办（周一至周日）", ...weekItems.sort(sortByDate).map((item) => item.line));
+    lines.push("", `📋 本周待办（${weekLabel2}）`, ...weekItems.sort(sortByDate).map((item) => item.line));
   }
 
   if (recurringItems.length) {

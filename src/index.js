@@ -246,13 +246,13 @@ async function handleMessage(input, userId, source = "user") {
       }
 
       // /new: ask agent to verify nothing is unsaved, then reset context
-      const actualInput = input.trim() === "/new"
-        ? `[系统指令] 用户发起 /new 上下文重置。请检查当前对话历史中是否有提到但尚未写入存储的任务、进度、提醒或规则。如果有遗漏，先补写入，然后回复用户"已确认数据完整，上下文已清空"并调用 archive_confirmed({}) 触发重置。如果没有遗漏，直接回复并调用 archive_confirmed({})。`
+      const isNew = input.trim() === "/new";
+      const actualInput = isNew
+        ? `[系统指令] 用户发起 /new 上下文重置。请检查当前对话历史中是否有提到但尚未写入存储的任务、进度、提醒或规则。如果有遗漏，先补调工具写入，再告知用户写了什么。如果没有遗漏，直接告知用户上下文已清空。`
         : input;
 
       const { reply, shouldResetContext } = await runAgent(actualInput, conversationHistory);
-
-      if (shouldResetContext) {
+      if (isNew || shouldResetContext) {
         conversationHistory = [];
         channel.display(`${reply}\n\n[上下文已刷新，从 source 重新加载]`, currentUserId);
         return;

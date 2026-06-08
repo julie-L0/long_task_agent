@@ -280,17 +280,17 @@ export const toolDefinitions = [
   {
     type: "function",
     function: {
-      name: "archive_confirmed",
-      description: "用户确认后归档项目、任务或独立提醒。调用此工具会触发上下文重置。必须先和用户确认！",
+      name: "update_project",
+      description: "更新项目状态或基本信息（名称、描述）。用户说项目完成了/不做了/暂停 → status=completed；项目改名 → name；不要用 archive_confirmed。",
       parameters: {
         type: "object",
         properties: {
-          project_ids: { type: "string", description: "要归档的项目 ID，逗号分隔" },
-          task_ids: { type: "string", description: "要归档的任务 ID，逗号分隔" },
-          reminder_ids: { type: "string", description: "要归档的独立提醒 ID，逗号分隔" },
-          rule_ids: { type: "string", description: "要删除的用户规则 ID，逗号分隔" },
+          id: { type: "string", description: "项目 ID" },
+          status: { type: "string", enum: ["active", "paused", "completed"], description: "completed=完成/不再追踪，paused=暂停" },
+          name: { type: "string" },
+          description: { type: "string" },
         },
-        required: [],
+        required: ["id"],
       },
     },
   },
@@ -304,11 +304,13 @@ export const toolDefinitions = [
         type: "object",
         properties: {
           name: { type: "string", description: "规则名称，如'睡觉提醒'" },
-          trigger_condition: { type: "string", description: "触发条件，如 'daily:23:00' 或 'weekly:mon,wed:09:00'" },
+          trigger_condition: { type: "string", description: "触发条件，如 'daily:23:00' 或 'weekly:mon,wed:09:00'；persona=沟通风格（初始设定）；rulebook=行为规则（随时补充）" },
           message: { type: "string", description: "提醒内容" },
           persistence: { type: "boolean", description: "是否持续提醒直到用户确认（默认 false）" },
           repeat_interval_min: { type: "number", description: "持续提醒时的间隔分钟数（persistence=true 时有效，默认15分钟）" },
           stop_condition: { type: "string", enum: ["user_confirms", "once"], description: "停止条件：user_confirms=用户确认后停；once=触发一次即停" },
+          penetrate_focus: { type: "boolean", description: "是否在专注模式（focus_mode）下也触发。喝水/吃药等健康提醒设为 true；默认 false（专注时静默）" },
+          status: { type: "string", enum: ["active", "paused"] },
         },
         required: ["name", "trigger_condition", "message"],
       },
@@ -757,68 +759,32 @@ export async function executeTool(name, args) {
     case "list_projects":
       return (await storage.listItems("projects")).filter((p) => ["active", "paused"].includes(p.status));
 
-    case "archive_confirmed": {
-      const results = [];
-
-      if (args.project_ids) {
-        for (const pid of args.project_ids.split(",").map((s) => s.trim())) {
-          const p = await storage.updateItem("projects", pid, { status: "archived" });
-          if (p) {
-            // 归档关联任务
-            const tasks = await storage.listItems("tasks", { project: p.name });
-            for (const t of tasks) {
-              if (t.status !== "completed" && t.status !== "cancelled") {
-                await storage.updateItem("tasks", t.id, { status: "cancelled" });
-              }
-            }
-            // 归档关联提醒
-            const reminders = (await storage.listItems("reminders")).filter(
-              (r) => r.status === "pending" && r.task_id && tasks.some((t) => t.id === r.task_id)
-            );
-            for (const r of reminders) {
-              await storage.updateItem("reminders", r.id, { status: "dismissed" });
-            }
-            results.push(`项目「${p.name}」已归档`);
+    case "update_project": {
+      const { id, ...updates } = args;
+      const result = await storage.updateItem("projects", id, updates);
+      if (!result) return { error: `Project ${id} not found` };
+      // If completing/retiring, cancel related pending tasks and reminders
+      if (updates.status === "completed") {
+        const tasks = await storage.listItems("tasks", { project: result.name });
+        for (const t of tasks) {
+          if (t.status !== "completed" && t.status !== "cancelled") {
+            await storage.updateItem("tasks", t.id, { status: "cancelled" });
           }
         }
-      }
-
-      if (args.task_ids) {
-        for (const tid of args.task_ids.split(",").map((s) => s.trim())) {
-          const t = await storage.updateItem("tasks", tid, { status: "completed" });
-          if (t) {
-            const reminders = (await storage.listItems("reminders")).filter(
-              (r) => r.status === "pending" && r.task_id === t.id
-            );
-            for (const r of reminders) {
-              await storage.updateItem("reminders", r.id, { status: "dismissed" });
-            }
-            results.push(`任务「${t.title}」已完成归档`);
-          }
+        const reminders = (await storage.listItems("reminders")).filter(
+          (r) => r.status === "pending" && r.task_id && tasks.some((t) => t.id === r.task_id)
+        );
+        for (const r of reminders) {
+          await storage.updateItem("reminders", r.id, { status: "dismissed" });
         }
       }
-
-      if (args.reminder_ids) {
-        for (const rid of args.reminder_ids.split(",").map((s) => s.trim())) {
-          const r = await storage.updateItem("reminders", rid, { status: "dismissed" });
-          if (r) results.push(`提醒「${r.message?.slice(0, 20)}」已归档`);
-        }
-      }
-
-      if (args.rule_ids) {
-        for (const rid of args.rule_ids.split(",").map((s) => s.trim())) {
-          const r = await storage.updateItem("user_rules", rid, { status: "paused" });
-          if (r) results.push(`规则「${r.name}」已停用`);
-        }
-      }
-
-      return { archived: results, context_reset: true };
+      return result;
     }
 
     // --- User Rule ---
     case "create_user_rule": {
-      if (!/^(daily:\d{1,2}:\d{2}|weekly:[a-z,]+:\d{1,2}:\d{2}|persona)$/.test(args.trigger_condition || "")) {
-        return { error: "create_user_rule 只接受 daily/weekly/persona。单次提醒必须用 create_task + create_reminder。" };
+      if (!/^(daily:\d{1,2}:\d{2}|weekly:[a-z,]+:\d{1,2}:\d{2}|persona|rulebook)$/.test(args.trigger_condition || "")) {
+        return { error: "create_user_rule 只接受 daily/weekly/persona/rulebook。单次提醒必须用 create_task + create_reminder。" };
       }
       const ruleText = `${args.name || ""} ${args.message || ""}`;
       if (/^weekly:/.test(args.trigger_condition) && !/每周|每星期|每个周|weekly/i.test(ruleText)) {
@@ -843,6 +809,7 @@ export async function executeTool(name, args) {
         persistence,
         repeat_interval_min: args.repeat_interval_min ?? 15,
         stop_condition: args.stop_condition ?? (persistence ? "user_confirms" : "once"),
+        penetrate_focus: args.penetrate_focus ?? false,
         status: "active",
         last_triggered_date: null,
         last_fired_at: null,

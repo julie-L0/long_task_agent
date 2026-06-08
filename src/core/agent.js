@@ -14,6 +14,23 @@ function isDashboardRequest(message) {
   return /^(面板|状态|dashboard|看看今天|今天怎么样|今日待办|今天有什么|本周待办|这周有什么)\s*$/i.test(message.trim());
 }
 
+function isRulesRequest(message) {
+  return /^(\/rules|看规则|我的规则|规则列表|查看规则|规则面板)\s*$/i.test(message.trim());
+}
+
+async function buildRulesPanel() {
+  const rules = await storage.listItems("user_rules");
+  const active = rules.filter((r) => r.status === "active");
+  const rulebook = active.filter((r) => r.trigger_condition === "rulebook");
+  if (!rulebook.length) return '当前没有行为规则。\n说"加一条规则：..."可以新增。';
+  const lines = ["📋 行为规则"];
+  rulebook.forEach((r, i) => {
+    lines.push(`${i + 1}. 【${r.name}】${r.message}  (id:${r.id})`);
+  });
+  lines.push('\n说"修改规则N：..."或"删掉规则N"可以更新。');
+  return lines.join("\n");
+}
+
 function claimsWriteSuccess(reply) {
   return /✅|已记录|已修正|已写入|已取消|已归档|已完成|记下了|设好了|改好了/.test(reply);
 }
@@ -34,11 +51,6 @@ function titleOf(result) {
 
 function summarizeWrite(toolName, result) {
   if (!result || typeof result !== "object" || result.error) return null;
-  if (toolName === "archive_confirmed") {
-    return Array.isArray(result.archived) && result.archived.length
-      ? `archive_confirmed: ${result.archived.join("；")}`
-      : null;
-  }
 
   const parts = [toolName, titleOf(result)];
   if (result.id) parts.push(`id:${result.id}`);
@@ -132,9 +144,17 @@ async function loadActiveContext() {
     contextBlock += `\n### 用户沟通偏好\n${personaRule.message}\n`;
   }
 
-  if (activeRules.filter((r) => r.trigger_condition !== "persona").length) {
+  const rulebookRules = activeRules.filter((r) => r.trigger_condition === "rulebook");
+  if (rulebookRules.length) {
+    contextBlock += "\n### 用户行为规则（严格遵守）\n";
+    rulebookRules.forEach((r, i) => {
+      contextBlock += `${i + 1}. 【${r.name}】${r.message}\n`;
+    });
+  }
+
+  if (activeRules.filter((r) => r.trigger_condition !== "persona" && r.trigger_condition !== "rulebook").length) {
     contextBlock += "\n### 活跃用户规则\n";
-    for (const r of activeRules.filter((r) => r.trigger_condition !== "persona")) {
+    for (const r of activeRules.filter((r) => r.trigger_condition !== "persona" && r.trigger_condition !== "rulebook")) {
       const confirmedToday = r.confirmed_at && dayjs(r.confirmed_at).isSame(dayjs(), "day");
       const tag = confirmedToday ? "✓已确认" : r.persistence ? "持续中" : "单次";
       contextBlock += `- [${tag}] 「${r.name}」${r.trigger_condition} | ${r.message.slice(0, 30)}${r.message.length > 30 ? "…" : ""}\n`;
@@ -312,6 +332,14 @@ export async function runAgent(userMessage, conversationHistory = []) {
     }
   }
 
+  if (isRulesRequest(userMessage)) {
+    try {
+      return { reply: await buildRulesPanel(), messages: [], shouldResetContext: false };
+    } catch (err) {
+      return { reply: `读取规则失败：${err.message}`, messages: [], shouldResetContext: false };
+    }
+  }
+
   let systemPrompt;
   try {
     systemPrompt = await loadSystemPrompt();
@@ -330,7 +358,7 @@ export async function runAgent(userMessage, conversationHistory = []) {
 
   let round = 0;
   let shouldResetContext = false;
-  const WRITE_TOOLS = new Set(["create_task", "create_reminder", "create_project", "update_task", "update_project_progress", "create_user_rule", "update_user_rule", "confirm_user_rule", "log_timeline", "update_timeline", "set_interruptibility", "archive_confirmed", "cancel_reminder"]);
+  const WRITE_TOOLS = new Set(["create_task", "create_reminder", "create_project", "update_task", "update_project", "update_project_progress", "create_user_rule", "update_user_rule", "confirm_user_rule", "log_timeline", "update_timeline", "set_interruptibility", "cancel_reminder"]);
   let hasWritten = false;
   let writeFailed = false;
 
@@ -382,7 +410,7 @@ export async function runAgent(userMessage, conversationHistory = []) {
           recordRecentWrite(toolCall.function.name, result);
         }
       }
-      if (toolCall.function.name === "archive_confirmed") {
+      if (toolCall.function.name === "update_project" && result?.status === "completed") {
         shouldResetContext = true;
       }
 
