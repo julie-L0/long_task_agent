@@ -147,9 +147,6 @@ export async function buildDashboard() {
       weekItems.push({ date, line: taskLine(task, date, true) });
     } else if (active && !date) {
       floatingItems.push(taskLine(task, null));
-    } else if (active && date && !isToday(date, now) && !isInWeekRange(date)) {
-      // has a date but outside current week display range — still show so nothing is lost
-      floatingItems.push(taskLine(task, date, true));
     }
   }
 
