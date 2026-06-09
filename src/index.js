@@ -297,6 +297,12 @@ async function handleReminder(reminder) {
   const interactive = reminder.type === "task_checkin" || reminder.type === "silence_check" || reminder.type === "project_nudge" || reminder.type === "focus_exit";
   console.log(`[reminder] type=${reminder.type} interactive=${interactive} userId=${currentUserId} msg="${reminder.message}"`);
 
+  // Don't interrupt if user just sent a message in the last 2 minutes
+  if (interactive && lastMessageAt && (Date.now() - lastMessageAt) < 2 * 60 * 1000) {
+    console.log(`[reminder] type=${reminder.type} skipped — user active ${Math.round((Date.now()-lastMessageAt)/1000)}s ago`);
+    return;
+  }
+
   if (interactive) {
     let tag;
     if (reminder.type === "silence_check") {

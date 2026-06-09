@@ -48,7 +48,12 @@ export function ruleTriggerAt(rule, date) {
 }
 
 function isConfirmedOn(rule, date) {
-  return rule.confirmed_at && dayjs(rule.confirmed_at).isSame(date, "day");
+  if (!rule.confirmed_at) return false;
+  // isSame("day") uses local time, but the trigger date (last_triggered_date) is the
+  // authoritative record. If confirmed_at is on the same trigger_date, it counts.
+  const confirmedDate = dayjs(rule.confirmed_at).format("YYYY-MM-DD");
+  const checkDate = dayjs(date).format("YYYY-MM-DD");
+  return confirmedDate === checkDate;
 }
 
 export function isRuleOccurrenceDone(rule, triggerAt) {

@@ -64,6 +64,8 @@ async function checkUserRules() {
   if (!await canSendProactiveNudge()) return;
 
   const now = dayjs();
+  const hour = now.hour();
+  if (hour < 8 || hour >= 23) return;
   const today = now.format("YYYY-MM-DD");
   const rules = (await storage.listItems("user_rules")).filter((r) => r.status === "active" && r.trigger_condition !== "persona");
 
