@@ -137,6 +137,7 @@ export async function buildDashboard() {
     return (d.isSame(weekStart, "day") || d.isAfter(weekStart)) && (d.isSame(weekEnd, "day") || d.isBefore(weekEnd));
   }
 
+  const floatingItems = []; // active tasks with no date anchor
   for (const task of tasks) {
     const date = taskDate(task);
     const active = activeTaskStatuses.has(task.status);
@@ -144,6 +145,11 @@ export async function buildDashboard() {
       todayItems.push({ date: date || task.updated_at || now.toISOString(), line: taskLine(task, date || now.toISOString()) });
     } else if (active && isInWeekRange(date)) {
       weekItems.push({ date, line: taskLine(task, date, true) });
+    } else if (active && !date) {
+      floatingItems.push(taskLine(task, null));
+    } else if (active && date && !isToday(date, now) && !isInWeekRange(date)) {
+      // has a date but outside current week display range — still show so nothing is lost
+      floatingItems.push(taskLine(task, date, true));
     }
   }
 
@@ -221,6 +227,10 @@ export async function buildDashboard() {
       }
       lines.push(`${p.name}  ${progress}  已 ${Math.max(staleDays, 0)} 天未推进`);
     }
+  }
+
+  if (floatingItems.length) {
+    lines.push("", "📋 其他待办", ...floatingItems);
   }
 
   const needs = tasks.filter((task) => activeTaskStatuses.has(task.status)).filter((task) => {
