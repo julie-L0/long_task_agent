@@ -12,7 +12,7 @@ const DAY_LABELS = {
 };
 
 export function parseRuleTrigger(triggerCondition) {
-  if (!triggerCondition || triggerCondition === "persona") return null;
+  if (!triggerCondition || triggerCondition === "persona" || triggerCondition === "rulebook") return null;
 
   const parts = String(triggerCondition).split(":");
   const type = parts[0];
@@ -86,7 +86,7 @@ export function shouldTriggerUserRule(rule, now = dayjs()) {
 }
 
 export function ruleOccurrencesInRange(rule, start, end, now = dayjs()) {
-  if (rule.status !== "active" || rule.trigger_condition === "persona") return [];
+  if (rule.status !== "active" || rule.trigger_condition === "persona" || rule.trigger_condition === "rulebook") return [];
 
   const rangeStart = dayjs(start).startOf("day");
   const rangeEnd = dayjs(end).endOf("day");

@@ -819,8 +819,17 @@ export async function executeTool(name, args) {
       return await storage.createItem("user_rules", rule);
     }
 
-    case "list_user_rules":
-      return await storage.listItems("user_rules");
+    case "list_user_rules": {
+      const allRules = await storage.listItems("user_rules");
+      const rulebook = allRules.filter(r => r.trigger_condition === "rulebook" && r.status === "active");
+      const persona = allRules.filter(r => r.trigger_condition === "persona" && r.status === "active");
+      const scheduled = allRules.filter(r => r.trigger_condition !== "rulebook" && r.trigger_condition !== "persona");
+      return {
+        rulebook_rules: rulebook.map(r => ({ id: r.id, name: r.name, rule: r.message })),
+        persona_rules: persona.map(r => ({ id: r.id, name: r.name, rule: r.message })),
+        scheduled_rules: scheduled,
+      };
+    }
 
     case "update_user_rule": {
       const { id, ...updates } = args;
