@@ -247,9 +247,31 @@ async function handleMessage(input, userId, source = "user") {
 
       // /new: ask agent to verify nothing is unsaved, then reset context
       const isNew = input.trim() === "/new";
+      const isPhaseEnd = source === "user" && isPureUserRuleConfirmation(input);
+      let deferableContext = "";
+      if (isPhaseEnd) {
+        const allTasks = await storage.listItems("tasks").catch(() => []);
+        const now = dayjs();
+        const endOfWeek = now.endOf("week");
+        const deferrable = allTasks.filter(
+          (t) =>
+            (t.status === "pending" || t.status === "in_progress") &&
+            t.execution_mode === "deferrable" &&
+            t.hard_deadline &&
+            dayjs(t.hard_deadline).isBefore(endOfWeek.add(1, "day"))
+        ).sort((a, b) => new Date(a.hard_deadline) - new Date(b.hard_deadline));
+        if (deferrable.length) {
+          const list = deferrable.map((t) => {
+            const ddl = dayjs(t.hard_deadline).format("M月D日");
+            return `「${t.title}」（${ddl}前）`;
+          }).join("、");
+          deferableContext = `\n\n[系统提示] 用户刚完成一件事，现在有空。以下待办可以见缝插针处理：${list}。请主动问用户要不要趁现在做其中一件，不要只问"下一步打算做什么"。`;
+        }
+      }
+
       const actualInput = isNew
         ? `[系统指令] 用户发起 /new 上下文重置。请检查当前对话历史中是否有提到但尚未写入存储的任务、进度、提醒或规则。如果有遗漏，先补调工具写入，再告知用户写了什么。如果没有遗漏，直接告知用户上下文已清空。`
-        : input;
+        : input + deferableContext;
 
       const { reply, shouldResetContext } = await runAgent(actualInput, conversationHistory);
       if (isNew || shouldResetContext) {

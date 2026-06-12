@@ -41,7 +41,7 @@ function priorityIcon(task) {
 }
 
 function taskDate(task) {
-  return task.start_time || task.hard_deadline || task.flexible_deadline || null;
+  return task.hard_deadline || task.start_time || task.flexible_deadline || null;
 }
 
 function taskLine(task, date, withDate = false) {
@@ -107,6 +107,7 @@ export async function buildDashboard() {
   const todayItems = [];
   const weekItems = [];
   const recurringItems = [];
+  const floatingItems = [];
   const activeTaskStatuses = new Set(["pending", "in_progress"]);
   // On weekends (sat/sun), show remainder of this weekend + next Mon-Fri
   // On weekdays, show Mon-Sun of current week
@@ -137,16 +138,53 @@ export async function buildDashboard() {
     return (d.isSame(weekStart, "day") || d.isAfter(weekStart)) && (d.isSame(weekEnd, "day") || d.isBefore(weekEnd));
   }
 
-  const floatingItems = []; // active tasks with no date anchor
+  // Collect rule occurrences first so we can dedup against tasks by title
+  const ruleOccurrencesToday = []; // { occurrence, rule }
+  const ruleOccurrencesWeek = [];
+  for (const rule of rules.filter((r) => r.status === "active" && r.trigger_condition !== "persona" && r.trigger_condition !== "rulebook")) {
+    if (isDailyRule(rule)) {
+      const line = recurringRuleLine(rule);
+      if (line) recurringItems.push(line);
+      continue;
+    }
+    for (const occurrence of ruleOccurrencesInRange(rule, weekStart, weekEnd, now)) {
+      if (isToday(occurrence.trigger_at, now)) {
+        ruleOccurrencesToday.push(occurrence);
+      } else if (isInWeekRange(occurrence.trigger_at)) {
+        ruleOccurrencesWeek.push(occurrence);
+      }
+    }
+  }
+
+  // Task titles that appear in today/week (to dedup rules with same name)
+
+  const taskTitlesToday = new Set();
+  const taskTitlesWeek = new Set();
   for (const task of tasks) {
     const date = taskDate(task);
     const active = activeTaskStatuses.has(task.status);
     if (active && (isToday(date, now) || task.status === "in_progress")) {
+      taskTitlesToday.add(task.title);
       todayItems.push({ date: date || task.updated_at || now.toISOString(), line: taskLine(task, date || now.toISOString()) });
     } else if (active && isInWeekRange(date)) {
+      taskTitlesWeek.add(task.title);
       weekItems.push({ date, line: taskLine(task, date, true) });
     } else if (active && !date) {
       floatingItems.push(taskLine(task, null));
+    }
+  }
+
+  // Rule occurrences: skip if a task with same title already covers it
+  for (const occurrence of ruleOccurrencesToday) {
+    const title = occurrence.rule.message || occurrence.rule.name;
+    if (!taskTitlesToday.has(title)) {
+      todayItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence) });
+    }
+  }
+  for (const occurrence of ruleOccurrencesWeek) {
+    const title = occurrence.rule.message || occurrence.rule.name;
+    if (!taskTitlesWeek.has(title)) {
+      weekItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence, true) });
     }
   }
 
@@ -156,22 +194,6 @@ export async function buildDashboard() {
       todayItems.push({ date: reminder.trigger_at, line: reminderLine(reminder) });
     } else if (isInWeekRange(reminder.trigger_at)) {
       weekItems.push({ date: reminder.trigger_at, line: reminderLine(reminder, true) });
-    }
-  }
-
-  for (const rule of rules.filter((r) => r.status === "active" && r.trigger_condition !== "persona")) {
-    if (isDailyRule(rule)) {
-      const line = recurringRuleLine(rule);
-      if (line) recurringItems.push(line);
-      continue;
-    }
-
-    for (const occurrence of ruleOccurrencesInRange(rule, weekStart, weekEnd, now)) {
-      if (isToday(occurrence.trigger_at, now)) {
-        todayItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence) });
-      } else if (isInWeekRange(occurrence.trigger_at)) {
-        weekItems.push({ date: occurrence.trigger_at, line: ruleLine(occurrence, true) });
-      }
     }
   }
 

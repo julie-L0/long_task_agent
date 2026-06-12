@@ -56,10 +56,12 @@ function isConfirmedOn(rule, date) {
   return confirmedDate === checkDate;
 }
 
-export function isRuleOccurrenceDone(rule, triggerAt) {
+export function isRuleOccurrenceDone(rule, triggerAt, now = dayjs()) {
   const date = dayjs(triggerAt);
   const dateKey = date.format("YYYY-MM-DD");
   if (isConfirmedOn(rule, date)) return true;
+  // Past occurrences (before today) are considered done once the day has passed
+  if (date.isBefore(now.startOf("day"))) return true;
   if (rule.last_triggered_date !== dateKey) return false;
   return !(rule.persistence && rule.stop_condition === "user_confirms");
 }
