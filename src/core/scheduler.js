@@ -67,7 +67,9 @@ async function checkUserRules() {
   const hour = now.hour();
   if (hour < 8 || hour >= 23) return;
   const today = now.format("YYYY-MM-DD");
-  const rules = (await storage.listItems("user_rules")).filter((r) => r.status === "active" && r.trigger_condition !== "persona");
+  const rules = (await storage.listItems("user_rules")).filter(
+    (r) => r.status === "active" && r.trigger_condition !== "persona" && r.trigger_condition !== "rulebook"
+  );
 
   for (const rule of rules) {
     if (!shouldTriggerUserRule(rule, now)) continue;
@@ -125,8 +127,13 @@ export function isTaskAvailableForNudge(task, now = dayjs()) {
 }
 
 async function hasActiveTimer() {
-  const timeline = await normalizeOpenTimelineEvents(await storage.listItems("timeline"));
-  return timeline.some((e) => !e.end_time && e.related_task_id);
+  try {
+    const timeline = await normalizeOpenTimelineEvents(await storage.listItems("timeline"));
+    return timeline.some((e) => !e.end_time && e.related_task_id);
+  } catch (err) {
+    console.error(`[scheduler] active timer check failed; assuming no active timer: ${err.message}`);
+    return false;
+  }
 }
 
 async function checkSilence() {
@@ -423,14 +430,22 @@ async function checkStreakBreaks() {
 }
 
 export function startScheduler() {
-  cron.schedule("* * * * *", checkReminders);
-  cron.schedule("* * * * *", checkUserRules);
-  cron.schedule("* * * * *", checkSilence);   // every minute so threshold is accurate
-  cron.schedule("*/5 * * * *", checkDeferrableOpportunity);
-  cron.schedule("*/5 * * * *", checkDailyQuota);
-  cron.schedule("*/5 * * * *", checkFocusExit);
-  cron.schedule("0 * * * *", checkStaleProjects);
-  cron.schedule("0 * * * *", checkExpectedNextAction);
-  cron.schedule("1 0 * * *", checkStreakBreaks);  // daily at 00:01
+  const safe = (name, fn) => async () => {
+    try {
+      await fn();
+    } catch (err) {
+      console.error(`[scheduler] ${name} failed: ${err.message}`);
+    }
+  };
+
+  cron.schedule("* * * * *", safe("checkReminders", checkReminders));
+  cron.schedule("* * * * *", safe("checkUserRules", checkUserRules));
+  cron.schedule("* * * * *", safe("checkSilence", checkSilence));   // every minute so threshold is accurate
+  cron.schedule("*/5 * * * *", safe("checkDeferrableOpportunity", checkDeferrableOpportunity));
+  cron.schedule("*/5 * * * *", safe("checkDailyQuota", checkDailyQuota));
+  cron.schedule("*/5 * * * *", safe("checkFocusExit", checkFocusExit));
+  cron.schedule("0 * * * *", safe("checkStaleProjects", checkStaleProjects));
+  cron.schedule("0 * * * *", safe("checkExpectedNextAction", checkExpectedNextAction));
+  cron.schedule("1 0 * * *", safe("checkStreakBreaks", checkStreakBreaks));  // daily at 00:01
   console.log("[scheduler] 已启动，每分钟检查提醒/规则/沉默，每小时检查长期任务和下一步动作");
 }

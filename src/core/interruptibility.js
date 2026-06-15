@@ -57,8 +57,13 @@ export function isInterruptible() {
 }
 
 export async function hasOpenFocusEvent() {
-  const items = await storage.listItems("timeline");
-  return items.some(e => !e.end_time && e.focus_mode === true);
+  try {
+    const items = await storage.listItems("timeline");
+    return items.some(e => !e.end_time && e.focus_mode === true);
+  } catch (err) {
+    console.error(`[interruptibility] focus check failed; assuming no active focus: ${err.message}`);
+    return false;
+  }
 }
 
 // manual DND blocks everything; focus_mode blocks proactive nudges (high-urgency reminders can still penetrate)

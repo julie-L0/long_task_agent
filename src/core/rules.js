@@ -12,18 +12,19 @@ const DAY_LABELS = {
 };
 
 export function parseRuleTrigger(triggerCondition) {
-  if (!triggerCondition || triggerCondition === "persona" || triggerCondition === "rulebook") return null;
+  const raw = String(triggerCondition || "").trim().toLowerCase();
+  if (!raw || raw === "persona" || raw === "rulebook") return null;
 
-  const parts = String(triggerCondition).split(":");
+  const parts = raw.split(":").map((part) => part.trim());
   const type = parts[0];
 
   let days = null;
   let triggerTime = null;
   if (type === "daily") {
-    triggerTime = parts.slice(1).join(":");
+    triggerTime = parts.slice(1).join(":").trim();
   } else if (type === "weekly") {
-    days = (parts[1] || "").split(",").filter(Boolean);
-    triggerTime = parts.slice(2).join(":");
+    days = (parts[1] || "").split(",").map((day) => day.trim()).filter(Boolean);
+    triggerTime = parts.slice(2).join(":").trim();
     if (!days.length) return null;
   } else {
     return null;

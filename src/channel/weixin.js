@@ -33,7 +33,28 @@ async function apiPost(endpoint, body, token, timeoutMs = API_TIMEOUT_MS) {
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    return await res.json();
+    const text = await res.text();
+    let data;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error(`invalid JSON response (${text.slice(0, 120)})`);
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${text.slice(0, 120)}`);
+    }
+    if (data && typeof data === "object") {
+      if (data.ok === false) {
+        throw new Error(data.error?.message || data.message || "request rejected");
+      }
+      if (Number.isFinite(data.errcode) && data.errcode !== 0) {
+        throw new Error(data.errmsg || data.message || `errcode ${data.errcode}`);
+      }
+      if (Number.isFinite(data.code) && data.code !== 0) {
+        throw new Error(data.msg || data.message || `code ${data.code}`);
+      }
+    }
+    return data;
   } finally {
     clearTimeout(timer);
   }
@@ -73,12 +94,12 @@ export function createWeixinChannel({ onMessage, isCurrentInstance = () => true 
   const pendingSends = []; // messages that failed to send, retry on next successful poll
   let consecutiveErrors = 0;
 
-  async function sendText(userId, text) {
+  async function sendText(userId, text, { queueOnFailure = true } = {}) {
     const ctxToken = contextTokens[userId] || "";
     const parts = chunkText(text);
     for (const chunk of parts) {
       try {
-        await apiPost(
+        const result = await apiPost(
           "ilink/bot/sendmessage",
           {
             msg: {
@@ -94,18 +115,23 @@ export function createWeixinChannel({ onMessage, isCurrentInstance = () => true 
           },
           token
         );
+        if (result && typeof result === "object" && result.ok === false) {
+          throw new Error(result.error?.message || result.message || "request rejected");
+        }
       } catch (e) {
         console.error("[weixin] send failed, queued for retry:", e.message);
-        pendingSends.push({ userId, text: chunk });
+        if (queueOnFailure) pendingSends.push({ userId, text: chunk });
+        else throw e;
       }
     }
   }
 
   async function flushPendingSends() {
-    while (pendingSends.length) {
+    const batchSize = pendingSends.length;
+    for (let i = 0; i < batchSize && pendingSends.length; i++) {
       const { userId, text } = pendingSends.shift();
       try {
-        await sendText(userId, text);
+        await sendText(userId, text, { queueOnFailure: false });
       } catch {
         pendingSends.unshift({ userId, text });
         break;
