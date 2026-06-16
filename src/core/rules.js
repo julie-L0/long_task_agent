@@ -68,11 +68,13 @@ export function isRuleOccurrenceDone(rule, triggerAt, now = dayjs()) {
 }
 
 export function shouldTriggerUserRule(rule, now = dayjs()) {
-  const triggerAt = ruleTriggerAt(rule, now);
-  if (!triggerAt) {
+  const parsed = parseRuleTrigger(rule.trigger_condition);
+  if (!parsed) {
     console.warn(`[scheduler] invalid user rule trigger_condition: ${rule.trigger_condition} (${rule.id})`);
     return false;
   }
+  const triggerAt = ruleTriggerAt(rule, now);
+  if (!triggerAt) return false; // today is not a trigger day for this rule
   if (now.isBefore(triggerAt)) return false;
   if (isConfirmedOn(rule, now)) return false;
 
