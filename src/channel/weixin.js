@@ -5,6 +5,7 @@ const LONG_POLL_TIMEOUT_MS = 35_000;
 const API_TIMEOUT_MS = 15_000;
 const MAX_CHUNK = 3800;
 const POLL_RETRY_DELAY_MS = 3_000;
+const INPUT_DEBOUNCE_MS = 2_000;
 
 function getBaseUrl() {
   return (process.env.WEIXIN_BASE_URL || "https://ilinkai.weixin.qq.com").trim().replace(/\/$/, "");
@@ -94,6 +95,19 @@ export function createWeixinChannel({ onMessage, isCurrentInstance = () => true 
   const pendingSends = []; // messages that failed to send, retry on next successful poll
   let consecutiveErrors = 0;
 
+  // Input debounce: accumulate messages per user, flush after INPUT_DEBOUNCE_MS of silence
+  const pendingInputByUser = new Map(); // userId -> { texts: string[], timer }
+
+  function scheduleInputFlush(senderId) {
+    const entry = pendingInputByUser.get(senderId);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    entry.timer = setTimeout(() => {
+      pendingInputByUser.delete(senderId);
+      onMessage(entry.texts.join("\n"), senderId);
+    }, INPUT_DEBOUNCE_MS);
+  }
+
   async function sendText(userId, text, { queueOnFailure = true } = {}) {
     const ctxToken = contextTokens[userId] || "";
     const parts = chunkText(text);
@@ -175,7 +189,13 @@ export function createWeixinChannel({ onMessage, isCurrentInstance = () => true 
       }
     }
 
-    onMessage(text, senderId);
+    const entry = pendingInputByUser.get(senderId);
+    if (entry) {
+      entry.texts.push(text);
+    } else {
+      pendingInputByUser.set(senderId, { texts: [text], timer: null });
+    }
+    scheduleInputFlush(senderId);
   }
 
   let pollAbort = new AbortController();
