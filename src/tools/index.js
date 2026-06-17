@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
-import { readFileSync, writeFileSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { resolve } from "path";
 import dayjs from "dayjs";
 import { config } from "../core/config.js";
 import * as storage from "../storage/index.js";
@@ -375,15 +376,15 @@ export const toolDefinitions = [
   {
     type: "function",
     function: {
-      name: "write_file",
-      description: "写入内容到本地文件",
+      name: "append_diary",
+      description: "向今日日记追加一条记录。在对话结束/切线、用户汇报进展、面板推送后自动调用，从对话上下文中提炼关键事件/状态，不需要用户主动要求。内容用一两句自然语言描述，不要重复已有内容。",
       parameters: {
         type: "object",
         properties: {
-          path: { type: "string", description: "文件路径" },
-          content: { type: "string", description: "文件内容" },
+          content: { type: "string", description: "要追加的内容，一两句自然语言描述事件/状态/进展" },
+          time: { type: "string", description: "事件时间 HH:mm，留空则用当前时间" },
         },
-        required: ["path", "content"],
+        required: ["content"],
       },
     },
   },
@@ -862,6 +863,22 @@ export async function executeTool(name, args) {
       try {
         writeFileSync(args.path, args.content, "utf8");
         return { success: true };
+      } catch (e) {
+        return { error: e.message };
+      }
+    }
+
+    case "append_diary": {
+      try {
+        const diaryDir = resolve(config.dataDir, "diary");
+        if (!existsSync(diaryDir)) mkdirSync(diaryDir, { recursive: true });
+        const date = dayjs().format("YYYY-MM-DD");
+        const time = args.time || dayjs().format("HH:mm");
+        const filePath = resolve(diaryDir, `${date}.md`);
+        const entry = `## ${time}\n${args.content}\n`;
+        const existing = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
+        writeFileSync(filePath, existing ? `${existing}\n${entry}` : entry, "utf8");
+        return { success: true, date, time };
       } catch (e) {
         return { error: e.message };
       }

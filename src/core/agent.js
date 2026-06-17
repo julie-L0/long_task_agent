@@ -358,7 +358,7 @@ export async function runAgent(userMessage, conversationHistory = []) {
 
   let round = 0;
   let shouldResetContext = false;
-  const WRITE_TOOLS = new Set(["create_task", "create_reminder", "create_project", "update_task", "update_project", "update_project_progress", "create_user_rule", "update_user_rule", "confirm_user_rule", "log_timeline", "update_timeline", "set_interruptibility", "cancel_reminder"]);
+  const WRITE_TOOLS = new Set(["create_task", "create_reminder", "create_project", "update_task", "update_project", "update_project_progress", "create_user_rule", "update_user_rule", "confirm_user_rule", "log_timeline", "update_timeline", "set_interruptibility", "cancel_reminder", "append_diary"]);
   let hasWritten = false;
   let writeFailed = false;
 
