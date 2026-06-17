@@ -303,7 +303,7 @@ async function handleReminder(reminder) {
       console.log(`[reminder] type=user_rule skipped (dnd/focus) msg="${reminder.message}"`);
       return;
     }
-    console.log(`[reminder] type=user_rule direct=true userId=${currentUserId} msg="${reminder.message}"`);
+    console.log(`[reminder] type=user_rule userId=${currentUserId} msg="${reminder.message}"`);
     if (reminder.persistence && reminder.stop_condition === "user_confirms") {
       pendingUserRules.set(reminder.id, {
         id: reminder.id,
@@ -312,7 +312,7 @@ async function handleReminder(reminder) {
         at: Date.now(),
       });
     }
-    channel.display(reminder.message, currentUserId);
+    handleMessage(`[系统触发] ${reminder.message}`, currentUserId, "scheduler");
     return;
   }
 
