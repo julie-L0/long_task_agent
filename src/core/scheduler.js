@@ -126,10 +126,12 @@ export function isTaskAvailableForNudge(task, now = dayjs()) {
   return !dayjs(task.start_time).isAfter(now);
 }
 
+const SILENT_ACTIVITY_TYPES = new Set(["work", "commute", "travel"]);
+
 async function hasActiveTimer() {
   try {
     const timeline = await normalizeOpenTimelineEvents(await storage.listItems("timeline"));
-    return timeline.some((e) => !e.end_time && e.related_task_id);
+    return timeline.some((e) => !e.end_time && (e.related_task_id || SILENT_ACTIVITY_TYPES.has(e.activity_type)));
   } catch (err) {
     console.error(`[scheduler] active timer check failed; assuming no active timer: ${err.message}`);
     return false;
