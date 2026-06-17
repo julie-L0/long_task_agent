@@ -93,7 +93,7 @@ async function checkUserRules() {
 }
 
 let lastSilenceCheckAt = null;
-const SILENCE_CHECK_COOLDOWN_MIN = 30;
+const SILENCE_CHECK_COOLDOWN_MIN = 120;
 
 const NUDGE_HISTORY_FILE = resolve(config.dataDir, "nudge-history.json");
 
