@@ -158,7 +158,7 @@ async function checkSilence() {
   if (lastSilenceCheckAt && now.diff(dayjs(lastSilenceCheckAt), "minute") < SILENCE_CHECK_COOLDOWN_MIN) return;
   lastSilenceCheckAt = now.toISOString();
 
-  const prompt = `用户已经 ${silentMin} 分钟没有消息。请用一句话问用户在忙什么；用户回答后只调用 log_timeline 记录当前活动。不要根据 activity_type 自动设置免打扰，不要追问结束时间；只有用户明确要求免打扰、计时或提醒时，才调用 set_interruptibility 或 create_reminder。`;
+  const prompt = `用户已经 ${silentMin} 分钟没有消息。根据已知的上下文和 timeline，判断用户当前是否明显在忙（如工作、通勤、已知活动中）——如果是，直接调用 log_timeline 静默记录，不要发任何消息给用户。只有在真的不确定用户状态时，才用一句话询问。`;
 
   if (onReminderFired) {
     onReminderFired({ id: "silence-check", type: "silence_check", message: prompt });
